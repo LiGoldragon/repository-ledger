@@ -1,0 +1,36 @@
+[package]
+name         = "repository-ledger"
+version      = "0.1.0"
+edition      = "2024"
+rust-version = "1.85"
+license      = "MIT OR Apache-2.0"
+description  = "Repository change ledger daemon and CLI."
+publish      = false
+
+[lib]
+name = "repository_ledger"
+path = "src/lib.rs"
+
+[[bin]]
+name = "repository-ledger-daemon"
+path = "src/bin/repository-ledger-daemon.rs"
+
+[[bin]]
+name = "repository-ledger"
+path = "src/bin/repository-ledger.rs"
+
+[dependencies]
+owner-signal-repository-ledger = { path = "../owner-signal-repository-ledger" }
+rkyv                           = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
+sema                           = { git = "https://github.com/LiGoldragon/sema.git" }
+sema-engine                    = { git = "https://github.com/LiGoldragon/sema-engine.git", branch = "main" }
+signal-repository-ledger       = { path = "../signal-repository-ledger" }
+thiserror                      = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+unused      = { level = "warn", priority = -1 }
+dead_code   = "warn"
