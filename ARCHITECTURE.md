@@ -123,3 +123,9 @@ The basic agent queries are:
 # Which commits have messages containing a string?
 (RepositoryCommitMessageQuery None None None (Some "query surface") 50)
 ```
+
+The query examples above show the canonical record grammar. The current
+generated channel request CLI also accepts bare present optional fields, for
+example `(RepositoryCommitMessageQuery testing None None "query surface" 50)`.
+That is a temporary `signal_channel!` request-syntax gap, not the desired
+contract grammar.
