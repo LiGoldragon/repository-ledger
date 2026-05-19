@@ -22,11 +22,11 @@ path = "src/bin/repository-ledger.rs"
 [dependencies]
 nota-codec                     = { git = "https://github.com/LiGoldragon/nota-codec.git", branch = "main" }
 nota-config                    = { git = "https://github.com/LiGoldragon/nota-config.git", branch = "main" }
-owner-signal-repository-ledger = { path = "../owner-signal-repository-ledger" }
+owner-signal-repository-ledger = { git = "ssh://gitolite@localhost/owner-signal-repository-ledger", branch = "main" }
 rkyv                           = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
 sema                           = { git = "https://github.com/LiGoldragon/sema.git" }
 sema-engine                    = { git = "https://github.com/LiGoldragon/sema-engine.git", branch = "main" }
-signal-repository-ledger       = { path = "../signal-repository-ledger" }
+signal-repository-ledger       = { git = "ssh://gitolite@localhost/signal-repository-ledger", branch = "main" }
 signal-core                    = { git = "https://github.com/LiGoldragon/signal-core.git", branch = "main" }
 thiserror                      = "2"
 
