@@ -22,14 +22,20 @@ use sema_engine::{
 };
 use signal_core::{NonEmpty, OperationFailureReason, Reply, RequestRejectionReason, SubReply};
 use signal_repository_ledger::{
-    ChannelReply, ChannelRequest, RepositoryCatalogListing, RepositoryEvent,
-    RepositoryEventListing, RepositoryEventQuery, RepositoryEventRecorded, RepositoryEventSequence,
-    RepositoryLedgerReply, RepositoryLedgerRequest, RepositoryLedgerRequestUnimplemented,
-    RepositoryLedgerUnimplementedReason, RepositoryReceiveHookNotification, RepositoryRegistration,
+    ChannelReply, ChannelRequest, RepositoryCatalogListing, RepositoryChangedFile,
+    RepositoryChangedFileListing, RepositoryChangedFileQuery, RepositoryCommit,
+    RepositoryCommitListing, RepositoryCommitMessageQuery, RepositoryCommitObservation,
+    RepositoryEvent, RepositoryEventListing, RepositoryEventQuery, RepositoryEventRecorded,
+    RepositoryEventSequence, RepositoryLedgerReply, RepositoryLedgerRequest,
+    RepositoryLedgerRequestUnimplemented, RepositoryLedgerUnimplementedReason, RepositoryName,
+    RepositoryPushObservation, RepositoryReceiveHookNotification,
+    RepositoryRecentRepositoriesListing, RepositoryRecentRepositoriesQuery,
+    RepositoryRecentRepository, RepositoryRegistration,
 };
 
 const SCHEMA_VERSION: u32 = 1;
 const REPOSITORY_EVENTS: TableName = TableName::new("repository_events");
+const REPOSITORY_COMMITS: TableName = TableName::new("repository_commits");
 const REPOSITORY_REGISTRATIONS: TableName = TableName::new("repository_registrations");
 const SPOOL_DIRECTORY_POLICY: TableName = TableName::new("spool_directory_policy");
 const MIRROR_POLICIES: TableName = TableName::new("mirror_policies");
@@ -97,6 +103,39 @@ impl EngineRecord for StoredRepositoryEvent {
 }
 
 #[derive(Archive, RkyvSerialize, RkyvDeserialize, Debug, Clone, PartialEq, Eq)]
+pub struct StoredRepositoryCommit {
+    pub repository_name: RepositoryName,
+    pub received_at: signal_repository_ledger::RepositoryTimestamp,
+    pub sequence: RepositoryEventSequence,
+    pub commit: RepositoryCommitObservation,
+}
+
+impl StoredRepositoryCommit {
+    pub fn into_contract(self) -> RepositoryCommit {
+        RepositoryCommit {
+            repository_name: self.repository_name,
+            received_at: self.received_at,
+            sequence: self.sequence,
+            object_identifier: self.commit.object_identifier,
+            ref_name: self.commit.ref_name,
+            commit_timestamp: self.commit.commit_timestamp,
+            message: self.commit.message,
+        }
+    }
+}
+
+impl EngineRecord for StoredRepositoryCommit {
+    fn record_key(&self) -> RecordKey {
+        RecordKey::new(format!(
+            "{:020}-{}-{}",
+            self.sequence.into_u64(),
+            self.commit.object_identifier.as_str(),
+            self.commit.ref_name.as_str()
+        ))
+    }
+}
+
+#[derive(Archive, RkyvSerialize, RkyvDeserialize, Debug, Clone, PartialEq, Eq)]
 pub struct StoredRepositoryRegistration {
     pub registration: RepositoryRegistration,
 }
@@ -132,6 +171,7 @@ impl EngineRecord for StoredMirrorPolicy {
 pub struct RepositoryLedgerStore {
     engine: Engine,
     events: TableReference<StoredRepositoryEvent>,
+    commits: TableReference<StoredRepositoryCommit>,
     registrations: TableReference<StoredRepositoryRegistration>,
     spool_directory_policy: TableReference<StoredSpoolDirectoryPolicy>,
     mirror_policies: TableReference<StoredMirrorPolicy>,
@@ -144,6 +184,7 @@ impl RepositoryLedgerStore {
             SchemaVersion::new(SCHEMA_VERSION),
         ))?;
         let events = engine.register_table(TableDescriptor::new(REPOSITORY_EVENTS))?;
+        let commits = engine.register_table(TableDescriptor::new(REPOSITORY_COMMITS))?;
         let registrations =
             engine.register_table(TableDescriptor::new(REPOSITORY_REGISTRATIONS))?;
         let spool_directory_policy =
@@ -152,6 +193,7 @@ impl RepositoryLedgerStore {
         Ok(Self {
             engine,
             events,
+            commits,
             registrations,
             spool_directory_policy,
             mirror_policies,
@@ -171,6 +213,31 @@ impl RepositoryLedgerStore {
             },
         ))?;
         Ok(RepositoryEventRecorded { sequence })
+    }
+
+    pub fn record_push_observation(
+        &self,
+        observation: RepositoryPushObservation,
+    ) -> Result<RepositoryEventRecorded> {
+        let RepositoryPushObservation {
+            notification,
+            commits,
+        } = observation;
+        let repository_name = notification.repository_name.clone();
+        let received_at = notification.received_at.clone();
+        let recorded = self.record_hook_notification(notification)?;
+        for commit in commits {
+            self.engine.assert(Assertion::new(
+                self.commits,
+                StoredRepositoryCommit {
+                    repository_name: repository_name.clone(),
+                    received_at: received_at.clone(),
+                    sequence: recorded.sequence,
+                    commit,
+                },
+            ))?;
+        }
+        Ok(recorded)
     }
 
     pub fn register_repository(
@@ -271,6 +338,143 @@ impl RepositoryLedgerStore {
         Ok(RepositoryEventListing { events })
     }
 
+    pub fn recent_repositories(
+        &self,
+        query: RepositoryRecentRepositoriesQuery,
+    ) -> Result<RepositoryRecentRepositoriesListing> {
+        let snapshot = self.engine.match_records(QueryPlan::all(self.events))?;
+        let mut repositories: Vec<RepositoryRecentRepository> = Vec::new();
+        for event in snapshot.records() {
+            if let Some(since) = &query.since_received_at {
+                if event.notification.received_at.as_str() < since.as_str() {
+                    continue;
+                }
+            }
+            let Some(existing) = repositories
+                .iter_mut()
+                .find(|candidate| candidate.repository_name == event.notification.repository_name)
+            else {
+                repositories.push(RepositoryRecentRepository {
+                    repository_name: event.notification.repository_name.clone(),
+                    latest_received_at: event.notification.received_at.clone(),
+                    latest_sequence: event.sequence,
+                    push_count: signal_repository_ledger::RepositoryQueryLimit::new(1),
+                });
+                continue;
+            };
+            existing.push_count = signal_repository_ledger::RepositoryQueryLimit::new(
+                existing.push_count.into_u64() + 1,
+            );
+            if event.notification.received_at.as_str() > existing.latest_received_at.as_str()
+                || event.sequence > existing.latest_sequence
+            {
+                existing.latest_received_at = event.notification.received_at.clone();
+                existing.latest_sequence = event.sequence;
+            }
+        }
+        repositories.sort_by(|left, right| {
+            right
+                .latest_received_at
+                .as_str()
+                .cmp(left.latest_received_at.as_str())
+                .then_with(|| right.latest_sequence.cmp(&left.latest_sequence))
+                .then_with(|| {
+                    left.repository_name
+                        .as_str()
+                        .cmp(right.repository_name.as_str())
+                })
+        });
+        repositories.truncate(query.limit.into_u64() as usize);
+        Ok(RepositoryRecentRepositoriesListing { repositories })
+    }
+
+    pub fn changed_files(
+        &self,
+        query: RepositoryChangedFileQuery,
+    ) -> Result<RepositoryChangedFileListing> {
+        let snapshot = self.engine.match_records(QueryPlan::all(self.commits))?;
+        let mut files = Vec::new();
+        for commit in snapshot.records() {
+            if !self.commit_matches_common_filters(
+                commit,
+                query.repository_name.as_ref(),
+                query.since_received_at.as_ref(),
+                query.until_received_at.as_ref(),
+            ) {
+                continue;
+            }
+            for file in &commit.commit.changed_files {
+                if let Some(search) = &query.path_contains {
+                    if !contains_case_insensitive(file.path.as_str(), search.as_str()) {
+                        continue;
+                    }
+                }
+                files.push(RepositoryChangedFile {
+                    repository_name: commit.repository_name.clone(),
+                    received_at: commit.received_at.clone(),
+                    sequence: commit.sequence,
+                    commit_object_identifier: commit.commit.object_identifier.clone(),
+                    ref_name: commit.commit.ref_name.clone(),
+                    status: file.status.clone(),
+                    path: file.path.clone(),
+                    old_path: file.old_path.clone(),
+                });
+            }
+        }
+        files.sort_by(|left, right| {
+            right
+                .received_at
+                .as_str()
+                .cmp(left.received_at.as_str())
+                .then_with(|| right.sequence.cmp(&left.sequence))
+                .then_with(|| left.path.as_str().cmp(right.path.as_str()))
+        });
+        files.truncate(query.limit.into_u64() as usize);
+        Ok(RepositoryChangedFileListing { files })
+    }
+
+    pub fn commit_messages(
+        &self,
+        query: RepositoryCommitMessageQuery,
+    ) -> Result<RepositoryCommitListing> {
+        let snapshot = self.engine.match_records(QueryPlan::all(self.commits))?;
+        let mut commits: Vec<RepositoryCommit> = snapshot
+            .records()
+            .iter()
+            .filter(|commit| {
+                self.commit_matches_common_filters(
+                    commit,
+                    query.repository_name.as_ref(),
+                    query.since_received_at.as_ref(),
+                    query.until_received_at.as_ref(),
+                )
+            })
+            .filter(|commit| {
+                if let Some(search) = &query.message_contains {
+                    contains_case_insensitive(commit.commit.message.as_str(), search.as_str())
+                } else {
+                    true
+                }
+            })
+            .cloned()
+            .map(StoredRepositoryCommit::into_contract)
+            .collect();
+        commits.sort_by(|left, right| {
+            right
+                .received_at
+                .as_str()
+                .cmp(left.received_at.as_str())
+                .then_with(|| right.sequence.cmp(&left.sequence))
+                .then_with(|| {
+                    left.object_identifier
+                        .as_str()
+                        .cmp(right.object_identifier.as_str())
+                })
+        });
+        commits.truncate(query.limit.into_u64() as usize);
+        Ok(RepositoryCommitListing { commits })
+    }
+
     pub fn repository_catalog(&self) -> Result<RepositoryCatalogListing> {
         let snapshot = self
             .engine
@@ -298,6 +502,31 @@ impl RepositoryLedgerStore {
             .unwrap_or(0)
             + 1;
         Ok(RepositoryEventSequence::new(next))
+    }
+
+    fn commit_matches_common_filters(
+        &self,
+        commit: &StoredRepositoryCommit,
+        repository_name: Option<&RepositoryName>,
+        since_received_at: Option<&signal_repository_ledger::RepositoryTimestamp>,
+        until_received_at: Option<&signal_repository_ledger::RepositoryTimestamp>,
+    ) -> bool {
+        if let Some(repository_name) = repository_name {
+            if commit.repository_name != *repository_name {
+                return false;
+            }
+        }
+        if let Some(since) = since_received_at {
+            if commit.received_at.as_str() < since.as_str() {
+                return false;
+            }
+        }
+        if let Some(until) = until_received_at {
+            if commit.received_at.as_str() > until.as_str() {
+                return false;
+            }
+        }
+        true
     }
 
     pub fn handle_ordinary_request(&self, request: ChannelRequest) -> ChannelReply {
@@ -368,9 +597,21 @@ impl RepositoryLedgerStore {
             RepositoryLedgerRequest::RepositoryReceiveHookNotification(notification) => self
                 .record_hook_notification(notification)
                 .map(RepositoryLedgerReply::RepositoryEventRecorded),
+            RepositoryLedgerRequest::RepositoryPushObservation(observation) => self
+                .record_push_observation(observation)
+                .map(RepositoryLedgerReply::RepositoryEventRecorded),
             RepositoryLedgerRequest::RepositoryEventQuery(query) => self
                 .repository_events(query)
                 .map(RepositoryLedgerReply::RepositoryEventListing),
+            RepositoryLedgerRequest::RepositoryRecentRepositoriesQuery(query) => self
+                .recent_repositories(query)
+                .map(RepositoryLedgerReply::RepositoryRecentRepositoriesListing),
+            RepositoryLedgerRequest::RepositoryChangedFileQuery(query) => self
+                .changed_files(query)
+                .map(RepositoryLedgerReply::RepositoryChangedFileListing),
+            RepositoryLedgerRequest::RepositoryCommitMessageQuery(query) => self
+                .commit_messages(query)
+                .map(RepositoryLedgerReply::RepositoryCommitListing),
             RepositoryLedgerRequest::RepositoryCatalogQuery(query) => {
                 let RepositoryCatalogListing { repositories } = self.repository_catalog()?;
                 let _ = query;
@@ -441,4 +682,8 @@ impl RepositoryLedgerError {
             },
         )
     }
+}
+
+fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
+    haystack.to_lowercase().contains(&needle.to_lowercase())
 }

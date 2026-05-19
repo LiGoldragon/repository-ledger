@@ -10,10 +10,13 @@ use signal_core::{
     LaneSequence, Reply, RequestPayload, SessionEpoch, SubReply,
 };
 use signal_repository_ledger::{
-    GitoliteUser, RefUpdate, RepositoryCatalogQuery, RepositoryClass, RepositoryEventQuery,
+    GitoliteUser, RefUpdate, RepositoryCatalogQuery, RepositoryChangedFileQuery, RepositoryClass,
+    RepositoryCommitMessage, RepositoryCommitMessageQuery, RepositoryCommitObservation,
+    RepositoryEventQuery, RepositoryFileChange, RepositoryFilePath, RepositoryFileStatus,
     RepositoryLedgerReply, RepositoryLedgerRequest, RepositoryName, RepositoryObjectIdentifier,
-    RepositoryQueryLimit, RepositoryReceiveHookNotification, RepositoryRefName,
-    RepositoryRegistration, RepositoryTimestamp,
+    RepositoryPushObservation, RepositoryQueryLimit, RepositoryReceiveHookNotification,
+    RepositoryRecentRepositoriesQuery, RepositoryRefName, RepositoryRegistration,
+    RepositoryTextSearch, RepositoryTimestamp,
 };
 
 fn notification(
@@ -32,6 +35,35 @@ fn notification(
             new_object_identifier: RepositoryObjectIdentifier::new(new_object_identifier),
             ref_name: RepositoryRefName::new("refs/heads/main"),
         }],
+    }
+}
+
+fn push_observation(
+    repository_name: &str,
+    received_at: &str,
+    commit_object_identifier: &str,
+    message: &str,
+    changed_files: Vec<RepositoryFileChange>,
+) -> RepositoryPushObservation {
+    let mut notification = notification(repository_name, commit_object_identifier);
+    notification.received_at = RepositoryTimestamp::new(received_at);
+    RepositoryPushObservation {
+        notification,
+        commits: vec![RepositoryCommitObservation {
+            object_identifier: RepositoryObjectIdentifier::new(commit_object_identifier),
+            ref_name: RepositoryRefName::new("refs/heads/main"),
+            commit_timestamp: RepositoryTimestamp::new(received_at),
+            message: RepositoryCommitMessage::new(message),
+            changed_files,
+        }],
+    }
+}
+
+fn changed_file(status: &str, path: &str) -> RepositoryFileChange {
+    RepositoryFileChange {
+        status: RepositoryFileStatus::new(status),
+        path: RepositoryFilePath::new(path),
+        old_path: None,
     }
 }
 
@@ -96,6 +128,78 @@ fn repository_catalog_is_typed_and_sorted() {
         .map(|registration| registration.repository_name.as_str())
         .collect();
     assert_eq!(names, vec!["repository-ledger", "signal-repository-ledger"]);
+}
+
+#[test]
+fn push_observations_support_recent_repository_file_and_message_queries() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let store = RepositoryLedgerStore::open(directory.path().join("repository-ledger.redb"))
+        .expect("store opens");
+
+    store
+        .record_push_observation(push_observation(
+            "repository-ledger",
+            "20260519T120000Z",
+            "1111111111111111111111111111111111111111",
+            "add repository query surface",
+            vec![
+                changed_file("M", "src/lib.rs"),
+                changed_file("A", "tests/store.rs"),
+            ],
+        ))
+        .expect("first observation");
+    store
+        .record_push_observation(push_observation(
+            "signal-repository-ledger",
+            "20260519T130000Z",
+            "2222222222222222222222222222222222222222",
+            "add commit message query records",
+            vec![changed_file("M", "src/lib.rs")],
+        ))
+        .expect("second observation");
+
+    let recent = store
+        .recent_repositories(RepositoryRecentRepositoriesQuery {
+            since_received_at: Some(RepositoryTimestamp::new("20260519T000000Z")),
+            limit: RepositoryQueryLimit::new(10),
+        })
+        .expect("recent repositories");
+    let recent_names: Vec<&str> = recent
+        .repositories
+        .iter()
+        .map(|repository| repository.repository_name.as_str())
+        .collect();
+    assert_eq!(
+        recent_names,
+        vec!["signal-repository-ledger", "repository-ledger"]
+    );
+
+    let files = store
+        .changed_files(RepositoryChangedFileQuery {
+            repository_name: Some(RepositoryName::new("repository-ledger")),
+            since_received_at: Some(RepositoryTimestamp::new("20260519T000000Z")),
+            until_received_at: Some(RepositoryTimestamp::new("20260519T235959Z")),
+            path_contains: Some(RepositoryTextSearch::new("store")),
+            limit: RepositoryQueryLimit::new(10),
+        })
+        .expect("changed files");
+    assert_eq!(files.files.len(), 1);
+    assert_eq!(files.files[0].path.as_str(), "tests/store.rs");
+
+    let commits = store
+        .commit_messages(RepositoryCommitMessageQuery {
+            repository_name: None,
+            since_received_at: None,
+            until_received_at: None,
+            message_contains: Some(RepositoryTextSearch::new("QUERY")),
+            limit: RepositoryQueryLimit::new(10),
+        })
+        .expect("commit messages");
+    assert_eq!(commits.commits.len(), 2);
+    assert_eq!(
+        commits.commits[0].repository_name.as_str(),
+        "signal-repository-ledger"
+    );
 }
 
 #[test]
