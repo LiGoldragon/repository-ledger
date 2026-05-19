@@ -6,21 +6,21 @@ use std::path::PathBuf;
 use nota_codec::{Decoder, Encoder, NotaDecode, NotaEncode};
 use signal_core::{
     ExchangeFrameBody, ExchangeIdentifier, ExchangeLane, HandshakeReply, HandshakeRequest,
-    LaneSequence, Reply, RequestPayload, SessionEpoch, SubReply,
+    LaneSequence, Reply as CoreReply, RequestPayload, SessionEpoch, SubReply,
 };
-use signal_repository_ledger::{ChannelRequest, RepositoryLedgerReply, RepositoryLedgerRequest};
+use signal_repository_ledger::{ChannelRequest, Reply as LedgerReply, Request as LedgerRequest};
 
 use crate::frame_io::OrdinaryFrameIo;
-use crate::{RepositoryLedgerError, Result};
+use crate::{Error, Result};
 
 const DEFAULT_SOCKET_PATH: &str = "/run/repository-ledger/repository-ledger.sock";
 const SOCKET_ENVIRONMENT_VARIABLE: &str = "REPOSITORY_LEDGER_SOCKET_PATH";
 
-pub struct RepositoryLedgerClient {
+pub struct Client {
     socket_path: PathBuf,
 }
 
-impl RepositoryLedgerClient {
+impl Client {
     pub fn new(socket_path: impl Into<PathBuf>) -> Self {
         Self {
             socket_path: socket_path.into(),
@@ -34,7 +34,7 @@ impl RepositoryLedgerClient {
         Self::new(socket_path)
     }
 
-    pub fn send(&self, payload: RepositoryLedgerRequest) -> Result<RepositoryLedgerReply> {
+    pub fn send(&self, payload: LedgerRequest) -> Result<LedgerReply> {
         let mut stream = UnixStream::connect(&self.socket_path)?;
         self.handshake(&mut stream)?;
         let exchange = ExchangeIdentifier::new(
@@ -54,12 +54,12 @@ impl RepositoryLedgerClient {
                 exchange: reply_exchange,
                 reply,
             } if reply_exchange == exchange => Self::unwrap_single_reply(reply),
-            _ => Err(RepositoryLedgerError::UnexpectedFrame),
+            _ => Err(Error::UnexpectedFrame),
         }
     }
 
     pub fn run_from_environment() -> Result<String> {
-        let request = RepositoryLedgerCliRequest::from_arguments(std::env::args_os().skip(1))?;
+        let request = CliRequest::from_arguments(std::env::args_os().skip(1))?;
         let reply = Self::from_environment().send(request.payload)?;
         let mut encoder = Encoder::new();
         reply.encode(&mut encoder)?;
@@ -75,28 +75,28 @@ impl RepositoryLedgerClient {
         match reply.into_body() {
             ExchangeFrameBody::HandshakeReply(HandshakeReply::Accepted(_)) => Ok(()),
             ExchangeFrameBody::HandshakeReply(HandshakeReply::Rejected(_)) => {
-                Err(RepositoryLedgerError::HandshakeRejected)
+                Err(Error::HandshakeRejected)
             }
-            _ => Err(RepositoryLedgerError::UnexpectedFrame),
+            _ => Err(Error::UnexpectedFrame),
         }
     }
 
-    fn unwrap_single_reply(reply: Reply<RepositoryLedgerReply>) -> Result<RepositoryLedgerReply> {
+    fn unwrap_single_reply(reply: CoreReply<LedgerReply>) -> Result<LedgerReply> {
         match reply {
-            Reply::Accepted { per_operation, .. } => match per_operation.into_head() {
+            CoreReply::Accepted { per_operation, .. } => match per_operation.into_head() {
                 SubReply::Ok { payload, .. } => Ok(payload),
-                _ => Err(RepositoryLedgerError::SignalRequestFailed),
+                _ => Err(Error::SignalRequestFailed),
             },
-            Reply::Rejected { .. } => Err(RepositoryLedgerError::SignalRequestRejected),
+            CoreReply::Rejected { .. } => Err(Error::SignalRequestRejected),
         }
     }
 }
 
-pub struct RepositoryLedgerCliRequest {
-    payload: RepositoryLedgerRequest,
+pub struct CliRequest {
+    payload: LedgerRequest,
 }
 
-impl RepositoryLedgerCliRequest {
+impl CliRequest {
     pub fn from_arguments<I, S>(arguments: I) -> Result<Self>
     where
         I: IntoIterator<Item = S>,
@@ -107,13 +107,11 @@ impl RepositoryLedgerCliRequest {
             .map(|argument| argument.as_ref().to_owned())
             .collect();
         let [argument] = arguments.as_slice() else {
-            return Err(RepositoryLedgerError::ExpectedSingleArgument);
+            return Err(Error::ExpectedSingleArgument);
         };
-        let text = argument
-            .to_str()
-            .ok_or(RepositoryLedgerError::ExpectedSingleArgument)?;
+        let text = argument.to_str().ok_or(Error::ExpectedSingleArgument)?;
         if text.starts_with("--") {
-            return Err(RepositoryLedgerError::FlagArgument(text.to_owned()));
+            return Err(Error::FlagArgument(text.to_owned()));
         }
         let source = if text.starts_with('(') {
             text.to_owned()
@@ -125,9 +123,9 @@ impl RepositoryLedgerCliRequest {
 
     pub fn from_nota(text: &str) -> Result<Self> {
         let mut decoder = Decoder::new(text);
-        let payload = RepositoryLedgerRequest::decode(&mut decoder)?;
+        let payload = LedgerRequest::decode(&mut decoder)?;
         if decoder.peek_token()?.is_some() {
-            return Err(RepositoryLedgerError::UnexpectedFrame);
+            return Err(Error::UnexpectedFrame);
         }
         Ok(Self { payload })
     }

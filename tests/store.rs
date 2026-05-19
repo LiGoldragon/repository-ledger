@@ -1,39 +1,33 @@
 use std::os::unix::net::UnixStream;
 use std::thread;
 
-use repository_ledger::RepositoryLedgerStore;
-use repository_ledger::daemon::RepositoryLedgerDaemon;
+use repository_ledger::Store;
+use repository_ledger::daemon::Daemon;
 use repository_ledger::frame_io::{OrdinaryFrameIo, OwnerFrameIo};
 use repository_ledger::spool::SpoolDirectory;
 use signal_core::{
     ExchangeFrameBody, ExchangeIdentifier, ExchangeLane, HandshakeReply, HandshakeRequest,
-    LaneSequence, Reply, RequestPayload, SessionEpoch, SubReply,
+    LaneSequence, Reply as CoreReply, RequestPayload, SessionEpoch, SubReply,
 };
 use signal_repository_ledger::{
-    GitoliteUser, RefUpdate, RepositoryCatalogQuery, RepositoryChangedFileQuery, RepositoryClass,
-    RepositoryCommitMessage, RepositoryCommitMessageQuery, RepositoryCommitObservation,
-    RepositoryEventQuery, RepositoryFileChange, RepositoryFilePath, RepositoryFileStatus,
-    RepositoryLedgerReply, RepositoryLedgerRequest, RepositoryName, RepositoryObjectIdentifier,
-    RepositoryPushObservation, RepositoryQueryLimit, RepositoryReceiveHookNotification,
-    RepositoryRecentRepositoriesQuery, RepositoryRefName, RepositoryRegistration,
-    RepositoryTextSearch, RepositoryTimestamp,
+    CatalogQuery, ChangedFileQuery, Class, CommitMessage, CommitMessageQuery, CommitObservation,
+    EventQuery, FileChange, FilePath, FileStatus, GitoliteUser, Name, ObjectIdentifier,
+    PushObservation, QueryLimit, ReceiveHookNotification, RecentRepositoriesQuery, RefName,
+    RefUpdate, Registration, Reply as LedgerReply, Request as LedgerRequest, TextSearch, Timestamp,
 };
 
-fn notification(
-    repository_name: &str,
-    new_object_identifier: &str,
-) -> RepositoryReceiveHookNotification {
-    RepositoryReceiveHookNotification {
-        repository_name: RepositoryName::new(repository_name),
+fn notification(repository_name: &str, new_object_identifier: &str) -> ReceiveHookNotification {
+    ReceiveHookNotification {
+        repository_name: Name::new(repository_name),
         gitolite_user: GitoliteUser::new("gitolite-admin"),
-        received_at: RepositoryTimestamp::new("20260519T120000Z"),
+        received_at: Timestamp::new("20260519T120000Z"),
         daemon_socket_present: false,
         ref_updates: vec![RefUpdate {
-            old_object_identifier: RepositoryObjectIdentifier::new(
+            old_object_identifier: ObjectIdentifier::new(
                 "0000000000000000000000000000000000000000",
             ),
-            new_object_identifier: RepositoryObjectIdentifier::new(new_object_identifier),
-            ref_name: RepositoryRefName::new("refs/heads/main"),
+            new_object_identifier: ObjectIdentifier::new(new_object_identifier),
+            ref_name: RefName::new("refs/heads/main"),
         }],
     }
 }
@@ -43,26 +37,26 @@ fn push_observation(
     received_at: &str,
     commit_object_identifier: &str,
     message: &str,
-    changed_files: Vec<RepositoryFileChange>,
-) -> RepositoryPushObservation {
+    changed_files: Vec<FileChange>,
+) -> PushObservation {
     let mut notification = notification(repository_name, commit_object_identifier);
-    notification.received_at = RepositoryTimestamp::new(received_at);
-    RepositoryPushObservation {
+    notification.received_at = Timestamp::new(received_at);
+    PushObservation {
         notification,
-        commits: vec![RepositoryCommitObservation {
-            object_identifier: RepositoryObjectIdentifier::new(commit_object_identifier),
-            ref_name: RepositoryRefName::new("refs/heads/main"),
-            commit_timestamp: RepositoryTimestamp::new(received_at),
-            message: RepositoryCommitMessage::new(message),
+        commits: vec![CommitObservation {
+            object_identifier: ObjectIdentifier::new(commit_object_identifier),
+            ref_name: RefName::new("refs/heads/main"),
+            commit_timestamp: Timestamp::new(received_at),
+            message: CommitMessage::new(message),
             changed_files,
         }],
     }
 }
 
-fn changed_file(status: &str, path: &str) -> RepositoryFileChange {
-    RepositoryFileChange {
-        status: RepositoryFileStatus::new(status),
-        path: RepositoryFilePath::new(path),
+fn changed_file(status: &str, path: &str) -> FileChange {
+    FileChange {
+        status: FileStatus::new(status),
+        path: FilePath::new(path),
         old_path: None,
     }
 }
@@ -70,8 +64,7 @@ fn changed_file(status: &str, path: &str) -> RepositoryFileChange {
 #[test]
 fn hook_notifications_are_committed_as_typed_events() {
     let directory = tempfile::tempdir().expect("temp dir");
-    let store = RepositoryLedgerStore::open(directory.path().join("repository-ledger.redb"))
-        .expect("store opens");
+    let store = Store::open(directory.path().join("repository-ledger.redb")).expect("store opens");
 
     let first = store
         .record_hook_notification(notification(
@@ -90,10 +83,10 @@ fn hook_notifications_are_committed_as_typed_events() {
     assert_eq!(second.sequence.into_u64(), 2);
 
     let listing = store
-        .repository_events(RepositoryEventQuery {
+        .repository_events(EventQuery {
             repository_name: None,
             since_sequence: None,
-            limit: RepositoryQueryLimit::new(10),
+            limit: QueryLimit::new(10),
         })
         .expect("events list");
     assert_eq!(listing.events.len(), 2);
@@ -106,19 +99,18 @@ fn hook_notifications_are_committed_as_typed_events() {
 #[test]
 fn repository_catalog_is_typed_and_sorted() {
     let directory = tempfile::tempdir().expect("temp dir");
-    let store = RepositoryLedgerStore::open(directory.path().join("repository-ledger.redb"))
-        .expect("store opens");
+    let store = Store::open(directory.path().join("repository-ledger.redb")).expect("store opens");
 
     store
-        .register_repository(RepositoryRegistration {
-            repository_name: RepositoryName::new("signal-repository-ledger"),
-            repository_class: RepositoryClass::OrdinarySignalContract,
+        .register_repository(Registration {
+            repository_name: Name::new("signal-repository-ledger"),
+            repository_class: Class::OrdinarySignalContract,
         })
         .expect("signal registration");
     let catalog = store
-        .register_repository(RepositoryRegistration {
-            repository_name: RepositoryName::new("repository-ledger"),
-            repository_class: RepositoryClass::RuntimeComponent,
+        .register_repository(Registration {
+            repository_name: Name::new("repository-ledger"),
+            repository_class: Class::RuntimeComponent,
         })
         .expect("runtime registration");
 
@@ -133,8 +125,7 @@ fn repository_catalog_is_typed_and_sorted() {
 #[test]
 fn push_observations_support_recent_repository_file_and_message_queries() {
     let directory = tempfile::tempdir().expect("temp dir");
-    let store = RepositoryLedgerStore::open(directory.path().join("repository-ledger.redb"))
-        .expect("store opens");
+    let store = Store::open(directory.path().join("repository-ledger.redb")).expect("store opens");
 
     store
         .record_push_observation(push_observation(
@@ -159,9 +150,9 @@ fn push_observations_support_recent_repository_file_and_message_queries() {
         .expect("second observation");
 
     let recent = store
-        .recent_repositories(RepositoryRecentRepositoriesQuery {
-            since_received_at: Some(RepositoryTimestamp::new("20260519T000000Z")),
-            limit: RepositoryQueryLimit::new(10),
+        .recent_repositories(RecentRepositoriesQuery {
+            since_received_at: Some(Timestamp::new("20260519T000000Z")),
+            limit: QueryLimit::new(10),
         })
         .expect("recent repositories");
     let recent_names: Vec<&str> = recent
@@ -175,24 +166,24 @@ fn push_observations_support_recent_repository_file_and_message_queries() {
     );
 
     let files = store
-        .changed_files(RepositoryChangedFileQuery {
-            repository_name: Some(RepositoryName::new("repository-ledger")),
-            since_received_at: Some(RepositoryTimestamp::new("20260519T000000Z")),
-            until_received_at: Some(RepositoryTimestamp::new("20260519T235959Z")),
-            path_contains: Some(RepositoryTextSearch::new("store")),
-            limit: RepositoryQueryLimit::new(10),
+        .changed_files(ChangedFileQuery {
+            repository_name: Some(Name::new("repository-ledger")),
+            since_received_at: Some(Timestamp::new("20260519T000000Z")),
+            until_received_at: Some(Timestamp::new("20260519T235959Z")),
+            path_contains: Some(TextSearch::new("store")),
+            limit: QueryLimit::new(10),
         })
         .expect("changed files");
     assert_eq!(files.files.len(), 1);
     assert_eq!(files.files[0].path.as_str(), "tests/store.rs");
 
     let commits = store
-        .commit_messages(RepositoryCommitMessageQuery {
+        .commit_messages(CommitMessageQuery {
             repository_name: None,
             since_received_at: None,
             until_received_at: None,
-            message_contains: Some(RepositoryTextSearch::new("QUERY")),
-            limit: RepositoryQueryLimit::new(10),
+            message_contains: Some(TextSearch::new("QUERY")),
+            limit: QueryLimit::new(10),
         })
         .expect("commit messages");
     assert_eq!(commits.commits.len(), 2);
@@ -205,15 +196,14 @@ fn push_observations_support_recent_repository_file_and_message_queries() {
 #[test]
 fn spool_files_are_ingested_and_moved_to_processed() {
     let directory = tempfile::tempdir().expect("temp dir");
-    let store = RepositoryLedgerStore::open(directory.path().join("repository-ledger.redb"))
-        .expect("store opens");
+    let store = Store::open(directory.path().join("repository-ledger.redb")).expect("store opens");
     let spool = directory.path().join("spool");
     std::fs::create_dir_all(&spool).expect("spool dir");
     let file = spool.join("20260519T120000Z-repository-ledger-1.nota");
     std::fs::write(
         &file,
-        r#"(RepositoryReceiveHookNotification
-  (RepositoryName "repository-ledger")
+        r#"(ReceiveHookNotification
+  (Name "repository-ledger")
   (GitoliteUser "gitolite-admin")
   (ReceivedAt "20260519T120000Z")
   (DaemonSocketPresent false)
@@ -238,10 +228,10 @@ fn spool_files_are_ingested_and_moved_to_processed() {
     );
 
     let listing = store
-        .repository_events(RepositoryEventQuery {
-            repository_name: Some(RepositoryName::new("repository-ledger")),
+        .repository_events(EventQuery {
+            repository_name: Some(Name::new("repository-ledger")),
             since_sequence: None,
-            limit: RepositoryQueryLimit::new(10),
+            limit: QueryLimit::new(10),
         })
         .expect("events");
     assert_eq!(listing.events.len(), 1);
@@ -256,18 +246,17 @@ fn spool_files_are_ingested_and_moved_to_processed() {
 #[test]
 fn ordinary_signal_socket_answers_catalog_query() {
     let directory = tempfile::tempdir().expect("temp dir");
-    let store = RepositoryLedgerStore::open(directory.path().join("repository-ledger.redb"))
-        .expect("store opens");
+    let store = Store::open(directory.path().join("repository-ledger.redb")).expect("store opens");
     store
-        .register_repository(RepositoryRegistration {
-            repository_name: RepositoryName::new("repository-ledger"),
-            repository_class: RepositoryClass::RuntimeComponent,
+        .register_repository(Registration {
+            repository_name: Name::new("repository-ledger"),
+            repository_class: Class::RuntimeComponent,
         })
         .expect("register");
 
     let (mut client, mut server) = UnixStream::pair().expect("pair");
     let handle = thread::spawn(move || {
-        RepositoryLedgerDaemon::serve_ordinary_stream(&store, &mut server).expect("serve");
+        Daemon::serve_ordinary_stream(&store, &mut server).expect("serve");
     });
 
     let handshake = signal_repository_ledger::Frame::new(ExchangeFrameBody::HandshakeRequest(
@@ -281,8 +270,7 @@ fn ordinary_signal_socket_answers_catalog_query() {
     ));
 
     let exchange = fresh_exchange();
-    let request =
-        RepositoryLedgerRequest::RepositoryCatalogQuery(RepositoryCatalogQuery).into_request();
+    let request = LedgerRequest::CatalogQuery(CatalogQuery).into_request();
     let frame =
         signal_repository_ledger::Frame::new(ExchangeFrameBody::Request { exchange, request });
     OrdinaryFrameIo::write(&mut client, &frame).expect("write request");
@@ -290,12 +278,12 @@ fn ordinary_signal_socket_answers_catalog_query() {
     match reply.into_body() {
         ExchangeFrameBody::Reply {
             exchange: reply_exchange,
-            reply: Reply::Accepted { per_operation, .. },
+            reply: CoreReply::Accepted { per_operation, .. },
         } => {
             assert_eq!(reply_exchange, exchange);
             match per_operation.into_head() {
                 SubReply::Ok {
-                    payload: RepositoryLedgerReply::RepositoryCatalogListing(listing),
+                    payload: LedgerReply::CatalogListing(listing),
                     ..
                 } => assert_eq!(listing.repositories.len(), 1),
                 other => panic!("unexpected reply {other:?}"),
@@ -309,21 +297,18 @@ fn ordinary_signal_socket_answers_catalog_query() {
 #[test]
 fn owner_signal_socket_registers_repository() {
     let directory = tempfile::tempdir().expect("temp dir");
-    let store = RepositoryLedgerStore::open(directory.path().join("repository-ledger.redb"))
-        .expect("store opens");
+    let store = Store::open(directory.path().join("repository-ledger.redb")).expect("store opens");
 
     let (mut client, mut server) = UnixStream::pair().expect("pair");
     let handle = thread::spawn(move || {
-        RepositoryLedgerDaemon::serve_owner_stream(&store, &mut server).expect("serve");
+        Daemon::serve_owner_stream(&store, &mut server).expect("serve");
     });
 
     let exchange = fresh_exchange();
-    let request = owner_signal_repository_ledger::OwnerRepositoryLedgerRequest::RegisterRepository(
-        RepositoryRegistration {
-            repository_name: RepositoryName::new("owner-signal-repository-ledger"),
-            repository_class: RepositoryClass::OwnerSignalContract,
-        },
-    )
+    let request = owner_signal_repository_ledger::Request::Registration(Registration {
+        repository_name: Name::new("owner-signal-repository-ledger"),
+        repository_class: Class::OwnerSignalContract,
+    })
     .into_request();
     let frame = owner_signal_repository_ledger::Frame::new(ExchangeFrameBody::Request {
         exchange,
@@ -334,15 +319,12 @@ fn owner_signal_socket_registers_repository() {
     match reply.into_body() {
         ExchangeFrameBody::Reply {
             exchange: reply_exchange,
-            reply: Reply::Accepted { per_operation, .. },
+            reply: CoreReply::Accepted { per_operation, .. },
         } => {
             assert_eq!(reply_exchange, exchange);
             match per_operation.into_head() {
                 SubReply::Ok {
-                    payload:
-                        owner_signal_repository_ledger::OwnerRepositoryLedgerReply::RepositoryRegistered(
-                            registered,
-                        ),
+                    payload: owner_signal_repository_ledger::Reply::Registered(registered),
                     ..
                 } => assert_eq!(
                     registered.repository_name.as_str(),

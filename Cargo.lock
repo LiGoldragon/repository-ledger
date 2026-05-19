@@ -265,7 +265,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 [[package]]
 name = "owner-signal-repository-ledger"
 version = "0.1.0"
-source = "git+ssh://gitolite@localhost/owner-signal-repository-ledger?branch=main#c5f725860ea553d73bec4cf64a5c776a2b18965a"
+source = "git+ssh://gitolite@localhost/owner-signal-repository-ledger?branch=main#941903aeb033dd859e79f5a51d3d188b83e35298"
 dependencies = [
  "nota-codec",
  "rkyv",
@@ -539,7 +539,7 @@ dependencies = [
 [[package]]
 name = "signal-repository-ledger"
 version = "0.1.0"
-source = "git+ssh://gitolite@localhost/signal-repository-ledger?branch=main#f9420c131aa0597883785bc51c42df95b38d47bb"
+source = "git+ssh://gitolite@localhost/signal-repository-ledger?branch=main#056da85b5ced26d169a9a331099ea630a4df5576"
 dependencies = [
  "nota-codec",
  "nota-config",

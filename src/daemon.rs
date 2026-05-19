@@ -7,23 +7,23 @@ use std::thread;
 use std::time::Duration;
 
 use signal_core::ExchangeFrameBody;
-use signal_repository_ledger::RepositoryLedgerDaemonConfiguration;
+use signal_repository_ledger::DaemonConfiguration;
 
 use crate::frame_io::{OrdinaryFrameIo, OwnerFrameIo, handshake_reply_for};
 use crate::spool::{SpoolDirectory, SpoolIngestSummary};
-use crate::{RepositoryLedgerError, RepositoryLedgerStore, Result};
+use crate::{Error, Result, Store};
 
-pub struct RepositoryLedgerDaemon {
-    configuration: RepositoryLedgerDaemonConfiguration,
+pub struct Daemon {
+    configuration: DaemonConfiguration,
 }
 
-impl RepositoryLedgerDaemon {
-    pub fn new(configuration: RepositoryLedgerDaemonConfiguration) -> Self {
+impl Daemon {
+    pub fn new(configuration: DaemonConfiguration) -> Self {
         Self { configuration }
     }
 
     pub fn run(self) -> Result<()> {
-        let store = Arc::new(Mutex::new(RepositoryLedgerStore::open(
+        let store = Arc::new(Mutex::new(Store::open(
             self.configuration.store_path.as_str(),
         )?));
         let ordinary_listener = Self::bind_socket(
@@ -51,20 +51,17 @@ impl RepositoryLedgerDaemon {
         loop {
             thread::sleep(Duration::from_secs(2));
             if let Err(error) = Self::ingest_spool_with_store(&store, &spool_directory) {
-                eprintln!("(RepositoryLedgerSpoolIngestError \"{error}\")");
+                eprintln!("(SpoolIngestError \"{error}\")");
             }
         }
     }
 
     pub fn ingest_spool(&self) -> Result<SpoolIngestSummary> {
-        let store = RepositoryLedgerStore::open(self.configuration.store_path.as_str())?;
+        let store = Store::open(self.configuration.store_path.as_str())?;
         SpoolDirectory::new(self.configuration.spool_directory.as_str()).ingest_into(&store)
     }
 
-    pub fn serve_ordinary_stream(
-        store: &RepositoryLedgerStore,
-        stream: &mut UnixStream,
-    ) -> Result<()> {
+    pub fn serve_ordinary_stream(store: &Store, stream: &mut UnixStream) -> Result<()> {
         loop {
             let frame = OrdinaryFrameIo::read(stream)?;
             match frame.into_body() {
@@ -84,15 +81,12 @@ impl RepositoryLedgerDaemon {
                     OrdinaryFrameIo::write(stream, &frame)?;
                     return Ok(());
                 }
-                _ => return Err(RepositoryLedgerError::UnexpectedFrame),
+                _ => return Err(Error::UnexpectedFrame),
             }
         }
     }
 
-    pub fn serve_owner_stream(
-        store: &RepositoryLedgerStore,
-        stream: &mut UnixStream,
-    ) -> Result<()> {
+    pub fn serve_owner_stream(store: &Store, stream: &mut UnixStream) -> Result<()> {
         loop {
             let frame = OwnerFrameIo::read(stream)?;
             match frame.into_body() {
@@ -112,13 +106,13 @@ impl RepositoryLedgerDaemon {
                     OwnerFrameIo::write(stream, &frame)?;
                     return Ok(());
                 }
-                _ => return Err(RepositoryLedgerError::UnexpectedFrame),
+                _ => return Err(Error::UnexpectedFrame),
             }
         }
     }
 
     fn ingest_spool_with_store(
-        store: &Arc<Mutex<RepositoryLedgerStore>>,
+        store: &Arc<Mutex<Store>>,
         spool_directory: &Path,
     ) -> Result<SpoolIngestSummary> {
         let store = store
@@ -127,28 +121,28 @@ impl RepositoryLedgerDaemon {
         SpoolDirectory::new(spool_directory).ingest_into(&store)
     }
 
-    fn run_ordinary_listener(listener: UnixListener, store: Arc<Mutex<RepositoryLedgerStore>>) {
+    fn run_ordinary_listener(listener: UnixListener, store: Arc<Mutex<Store>>) {
         for stream in listener.incoming() {
             match stream {
                 Ok(mut stream) => {
                     if let Err(error) = Self::serve_ordinary_stream_shared(&store, &mut stream) {
-                        eprintln!("(RepositoryLedgerOrdinarySocketError \"{error}\")");
+                        eprintln!("(OrdinarySocketError \"{error}\")");
                     }
                 }
-                Err(error) => eprintln!("(RepositoryLedgerOrdinaryAcceptError \"{error}\")"),
+                Err(error) => eprintln!("(OrdinaryAcceptError \"{error}\")"),
             }
         }
     }
 
-    fn run_owner_listener(listener: UnixListener, store: Arc<Mutex<RepositoryLedgerStore>>) {
+    fn run_owner_listener(listener: UnixListener, store: Arc<Mutex<Store>>) {
         for stream in listener.incoming() {
             match stream {
                 Ok(mut stream) => {
                     if let Err(error) = Self::serve_owner_stream_shared(&store, &mut stream) {
-                        eprintln!("(RepositoryLedgerOwnerSocketError \"{error}\")");
+                        eprintln!("(OwnerSocketError \"{error}\")");
                     }
                 }
-                Err(error) => eprintln!("(RepositoryLedgerOwnerAcceptError \"{error}\")"),
+                Err(error) => eprintln!("(OwnerAcceptError \"{error}\")"),
             }
         }
     }
@@ -161,7 +155,7 @@ impl RepositoryLedgerDaemon {
         if path.exists() {
             let metadata = fs::symlink_metadata(path)?;
             if !metadata.file_type().is_socket() {
-                return Err(RepositoryLedgerError::Io(std::io::Error::new(
+                return Err(Error::Io(std::io::Error::new(
                     std::io::ErrorKind::AlreadyExists,
                     format!("refusing to replace non-socket path {}", path.display()),
                 )));
@@ -174,7 +168,7 @@ impl RepositoryLedgerDaemon {
     }
 
     fn serve_ordinary_stream_shared(
-        store: &Arc<Mutex<RepositoryLedgerStore>>,
+        store: &Arc<Mutex<Store>>,
         stream: &mut UnixStream,
     ) -> Result<()> {
         loop {
@@ -201,15 +195,12 @@ impl RepositoryLedgerDaemon {
                     OrdinaryFrameIo::write(stream, &frame)?;
                     return Ok(());
                 }
-                _ => return Err(RepositoryLedgerError::UnexpectedFrame),
+                _ => return Err(Error::UnexpectedFrame),
             }
         }
     }
 
-    fn serve_owner_stream_shared(
-        store: &Arc<Mutex<RepositoryLedgerStore>>,
-        stream: &mut UnixStream,
-    ) -> Result<()> {
+    fn serve_owner_stream_shared(store: &Arc<Mutex<Store>>, stream: &mut UnixStream) -> Result<()> {
         loop {
             let frame = OwnerFrameIo::read(stream)?;
             match frame.into_body() {
@@ -234,7 +225,7 @@ impl RepositoryLedgerDaemon {
                     OwnerFrameIo::write(stream, &frame)?;
                     return Ok(());
                 }
-                _ => return Err(RepositoryLedgerError::UnexpectedFrame),
+                _ => return Err(Error::UnexpectedFrame),
             }
         }
     }

@@ -11,8 +11,10 @@ pub mod frame_io;
 pub mod spool;
 
 use owner_signal_repository_ledger::{
-    MirrorPolicy, MirrorPolicySet, RepositoryRegistered, RepositoryRetired, RetireRepository,
-    SpoolDirectoryPolicy, SpoolDirectoryPolicySet,
+    MirrorPolicy, MirrorPolicySet, OperationKind as OwnerOperationKind, Registered,
+    Reply as OwnerReply, Request as OwnerRequest,
+    RequestUnimplemented as OwnerRequestUnimplemented, Retired, Retirement, SpoolDirectoryPolicy,
+    SpoolDirectoryPolicySet, UnimplementedReason as OwnerUnimplementedReason,
 };
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use sema::SchemaVersion;
@@ -20,17 +22,16 @@ use sema_engine::{
     Assertion, Engine, EngineOpen, EngineRecord, Mutation, QueryPlan, RecordKey, Retraction,
     TableDescriptor, TableName, TableReference,
 };
-use signal_core::{NonEmpty, OperationFailureReason, Reply, RequestRejectionReason, SubReply};
+use signal_core::{
+    NonEmpty, OperationFailureReason, Reply as CoreReply, RequestRejectionReason, SubReply,
+};
 use signal_repository_ledger::{
-    ChannelReply, ChannelRequest, RepositoryCatalogListing, RepositoryChangedFile,
-    RepositoryChangedFileListing, RepositoryChangedFileQuery, RepositoryCommit,
-    RepositoryCommitListing, RepositoryCommitMessageQuery, RepositoryCommitObservation,
-    RepositoryEvent, RepositoryEventListing, RepositoryEventQuery, RepositoryEventRecorded,
-    RepositoryEventSequence, RepositoryLedgerReply, RepositoryLedgerRequest,
-    RepositoryLedgerRequestUnimplemented, RepositoryLedgerUnimplementedReason, RepositoryName,
-    RepositoryPushObservation, RepositoryReceiveHookNotification,
-    RepositoryRecentRepositoriesListing, RepositoryRecentRepositoriesQuery,
-    RepositoryRecentRepository, RepositoryRegistration,
+    CatalogListing, ChangedFile, ChangedFileListing, ChangedFileQuery, ChannelReply,
+    ChannelRequest, Commit, CommitListing, CommitMessageQuery, CommitObservation, Event,
+    EventListing, EventQuery, EventRecorded, EventSequence, Name, PushObservation, QueryLimit,
+    ReceiveHookNotification, RecentRepositoriesListing, RecentRepositoriesQuery, RecentRepository,
+    Registration, Reply as LedgerReply, Request as LedgerRequest, RequestUnimplemented, Timestamp,
+    UnimplementedReason,
 };
 
 const SCHEMA_VERSION: u32 = 1;
@@ -41,7 +42,7 @@ const SPOOL_DIRECTORY_POLICY: TableName = TableName::new("spool_directory_policy
 const MIRROR_POLICIES: TableName = TableName::new("mirror_policies");
 
 #[derive(Debug, thiserror::Error)]
-pub enum RepositoryLedgerError {
+pub enum Error {
     #[error("sema-engine error: {0}")]
     Engine(#[from] sema_engine::Error),
 
@@ -79,40 +80,40 @@ pub enum RepositoryLedgerError {
     SignalRequestFailed,
 }
 
-pub type Result<T> = std::result::Result<T, RepositoryLedgerError>;
+pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Archive, RkyvSerialize, RkyvDeserialize, Debug, Clone, PartialEq, Eq)]
-pub struct StoredRepositoryEvent {
-    pub sequence: RepositoryEventSequence,
-    pub notification: RepositoryReceiveHookNotification,
+pub struct StoredEvent {
+    pub sequence: EventSequence,
+    pub notification: ReceiveHookNotification,
 }
 
-impl StoredRepositoryEvent {
-    pub fn into_contract(self) -> RepositoryEvent {
-        RepositoryEvent {
+impl StoredEvent {
+    pub fn into_contract(self) -> Event {
+        Event {
             sequence: self.sequence,
             notification: self.notification,
         }
     }
 }
 
-impl EngineRecord for StoredRepositoryEvent {
+impl EngineRecord for StoredEvent {
     fn record_key(&self) -> RecordKey {
         RecordKey::new(format!("{:020}", self.sequence.into_u64()))
     }
 }
 
 #[derive(Archive, RkyvSerialize, RkyvDeserialize, Debug, Clone, PartialEq, Eq)]
-pub struct StoredRepositoryCommit {
-    pub repository_name: RepositoryName,
-    pub received_at: signal_repository_ledger::RepositoryTimestamp,
-    pub sequence: RepositoryEventSequence,
-    pub commit: RepositoryCommitObservation,
+pub struct StoredCommit {
+    pub repository_name: Name,
+    pub received_at: Timestamp,
+    pub sequence: EventSequence,
+    pub commit: CommitObservation,
 }
 
-impl StoredRepositoryCommit {
-    pub fn into_contract(self) -> RepositoryCommit {
-        RepositoryCommit {
+impl StoredCommit {
+    pub fn into_contract(self) -> Commit {
+        Commit {
             repository_name: self.repository_name,
             received_at: self.received_at,
             sequence: self.sequence,
@@ -124,7 +125,7 @@ impl StoredRepositoryCommit {
     }
 }
 
-impl EngineRecord for StoredRepositoryCommit {
+impl EngineRecord for StoredCommit {
     fn record_key(&self) -> RecordKey {
         RecordKey::new(format!(
             "{:020}-{}-{}",
@@ -136,11 +137,11 @@ impl EngineRecord for StoredRepositoryCommit {
 }
 
 #[derive(Archive, RkyvSerialize, RkyvDeserialize, Debug, Clone, PartialEq, Eq)]
-pub struct StoredRepositoryRegistration {
-    pub registration: RepositoryRegistration,
+pub struct StoredRegistration {
+    pub registration: Registration,
 }
 
-impl EngineRecord for StoredRepositoryRegistration {
+impl EngineRecord for StoredRegistration {
     fn record_key(&self) -> RecordKey {
         RecordKey::new(self.registration.repository_name.as_str().to_owned())
     }
@@ -168,16 +169,16 @@ impl EngineRecord for StoredMirrorPolicy {
     }
 }
 
-pub struct RepositoryLedgerStore {
+pub struct Store {
     engine: Engine,
-    events: TableReference<StoredRepositoryEvent>,
-    commits: TableReference<StoredRepositoryCommit>,
-    registrations: TableReference<StoredRepositoryRegistration>,
+    events: TableReference<StoredEvent>,
+    commits: TableReference<StoredCommit>,
+    registrations: TableReference<StoredRegistration>,
     spool_directory_policy: TableReference<StoredSpoolDirectoryPolicy>,
     mirror_policies: TableReference<StoredMirrorPolicy>,
 }
 
-impl RepositoryLedgerStore {
+impl Store {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let mut engine = Engine::open(EngineOpen::new(
             path.as_ref().to_path_buf(),
@@ -202,24 +203,21 @@ impl RepositoryLedgerStore {
 
     pub fn record_hook_notification(
         &self,
-        notification: RepositoryReceiveHookNotification,
-    ) -> Result<RepositoryEventRecorded> {
+        notification: ReceiveHookNotification,
+    ) -> Result<EventRecorded> {
         let sequence = self.next_event_sequence()?;
         self.engine.assert(Assertion::new(
             self.events,
-            StoredRepositoryEvent {
+            StoredEvent {
                 sequence,
                 notification,
             },
         ))?;
-        Ok(RepositoryEventRecorded { sequence })
+        Ok(EventRecorded { sequence })
     }
 
-    pub fn record_push_observation(
-        &self,
-        observation: RepositoryPushObservation,
-    ) -> Result<RepositoryEventRecorded> {
-        let RepositoryPushObservation {
+    pub fn record_push_observation(&self, observation: PushObservation) -> Result<EventRecorded> {
+        let PushObservation {
             notification,
             commits,
         } = observation;
@@ -229,7 +227,7 @@ impl RepositoryLedgerStore {
         for commit in commits {
             self.engine.assert(Assertion::new(
                 self.commits,
-                StoredRepositoryCommit {
+                StoredCommit {
                     repository_name: repository_name.clone(),
                     received_at: received_at.clone(),
                     sequence: recorded.sequence,
@@ -240,11 +238,8 @@ impl RepositoryLedgerStore {
         Ok(recorded)
     }
 
-    pub fn register_repository(
-        &self,
-        registration: RepositoryRegistration,
-    ) -> Result<RepositoryCatalogListing> {
-        let record = StoredRepositoryRegistration { registration };
+    pub fn register_repository(&self, registration: Registration) -> Result<CatalogListing> {
+        let record = StoredRegistration { registration };
         match self
             .engine
             .mutate(Mutation::new(self.registrations, record.clone()))
@@ -259,12 +254,12 @@ impl RepositoryLedgerStore {
         self.repository_catalog()
     }
 
-    pub fn retire_repository(&self, request: RetireRepository) -> Result<RepositoryRetired> {
+    pub fn retire_repository(&self, request: Retirement) -> Result<Retired> {
         self.engine.retract(Retraction::new(
             self.registrations,
             RecordKey::new(request.repository_name.as_str().to_owned()),
         ))?;
-        Ok(RepositoryRetired {
+        Ok(Retired {
             repository_name: request.repository_name,
         })
     }
@@ -311,9 +306,9 @@ impl RepositoryLedgerStore {
         })
     }
 
-    pub fn repository_events(&self, query: RepositoryEventQuery) -> Result<RepositoryEventListing> {
+    pub fn repository_events(&self, query: EventQuery) -> Result<EventListing> {
         let snapshot = self.engine.match_records(QueryPlan::all(self.events))?;
-        let mut events: Vec<RepositoryEvent> = snapshot
+        let mut events: Vec<Event> = snapshot
             .records()
             .iter()
             .cloned()
@@ -331,19 +326,19 @@ impl RepositoryLedgerStore {
                     true
                 }
             })
-            .map(StoredRepositoryEvent::into_contract)
+            .map(StoredEvent::into_contract)
             .collect();
         events.sort_by_key(|event| event.sequence);
         events.truncate(query.limit.into_u64() as usize);
-        Ok(RepositoryEventListing { events })
+        Ok(EventListing { events })
     }
 
     pub fn recent_repositories(
         &self,
-        query: RepositoryRecentRepositoriesQuery,
-    ) -> Result<RepositoryRecentRepositoriesListing> {
+        query: RecentRepositoriesQuery,
+    ) -> Result<RecentRepositoriesListing> {
         let snapshot = self.engine.match_records(QueryPlan::all(self.events))?;
-        let mut repositories: Vec<RepositoryRecentRepository> = Vec::new();
+        let mut repositories: Vec<RecentRepository> = Vec::new();
         for event in snapshot.records() {
             if let Some(since) = &query.since_received_at {
                 if event.notification.received_at.as_str() < since.as_str() {
@@ -354,17 +349,15 @@ impl RepositoryLedgerStore {
                 .iter_mut()
                 .find(|candidate| candidate.repository_name == event.notification.repository_name)
             else {
-                repositories.push(RepositoryRecentRepository {
+                repositories.push(RecentRepository {
                     repository_name: event.notification.repository_name.clone(),
                     latest_received_at: event.notification.received_at.clone(),
                     latest_sequence: event.sequence,
-                    push_count: signal_repository_ledger::RepositoryQueryLimit::new(1),
+                    push_count: QueryLimit::new(1),
                 });
                 continue;
             };
-            existing.push_count = signal_repository_ledger::RepositoryQueryLimit::new(
-                existing.push_count.into_u64() + 1,
-            );
+            existing.push_count = QueryLimit::new(existing.push_count.into_u64() + 1);
             if event.notification.received_at.as_str() > existing.latest_received_at.as_str()
                 || event.sequence > existing.latest_sequence
             {
@@ -385,13 +378,10 @@ impl RepositoryLedgerStore {
                 })
         });
         repositories.truncate(query.limit.into_u64() as usize);
-        Ok(RepositoryRecentRepositoriesListing { repositories })
+        Ok(RecentRepositoriesListing { repositories })
     }
 
-    pub fn changed_files(
-        &self,
-        query: RepositoryChangedFileQuery,
-    ) -> Result<RepositoryChangedFileListing> {
+    pub fn changed_files(&self, query: ChangedFileQuery) -> Result<ChangedFileListing> {
         let snapshot = self.engine.match_records(QueryPlan::all(self.commits))?;
         let mut files = Vec::new();
         for commit in snapshot.records() {
@@ -409,7 +399,7 @@ impl RepositoryLedgerStore {
                         continue;
                     }
                 }
-                files.push(RepositoryChangedFile {
+                files.push(ChangedFile {
                     repository_name: commit.repository_name.clone(),
                     received_at: commit.received_at.clone(),
                     sequence: commit.sequence,
@@ -430,15 +420,12 @@ impl RepositoryLedgerStore {
                 .then_with(|| left.path.as_str().cmp(right.path.as_str()))
         });
         files.truncate(query.limit.into_u64() as usize);
-        Ok(RepositoryChangedFileListing { files })
+        Ok(ChangedFileListing { files })
     }
 
-    pub fn commit_messages(
-        &self,
-        query: RepositoryCommitMessageQuery,
-    ) -> Result<RepositoryCommitListing> {
+    pub fn commit_messages(&self, query: CommitMessageQuery) -> Result<CommitListing> {
         let snapshot = self.engine.match_records(QueryPlan::all(self.commits))?;
-        let mut commits: Vec<RepositoryCommit> = snapshot
+        let mut commits: Vec<Commit> = snapshot
             .records()
             .iter()
             .filter(|commit| {
@@ -457,7 +444,7 @@ impl RepositoryLedgerStore {
                 }
             })
             .cloned()
-            .map(StoredRepositoryCommit::into_contract)
+            .map(StoredCommit::into_contract)
             .collect();
         commits.sort_by(|left, right| {
             right
@@ -472,14 +459,14 @@ impl RepositoryLedgerStore {
                 })
         });
         commits.truncate(query.limit.into_u64() as usize);
-        Ok(RepositoryCommitListing { commits })
+        Ok(CommitListing { commits })
     }
 
-    pub fn repository_catalog(&self) -> Result<RepositoryCatalogListing> {
+    pub fn repository_catalog(&self) -> Result<CatalogListing> {
         let snapshot = self
             .engine
             .match_records(QueryPlan::all(self.registrations))?;
-        let mut repositories: Vec<RepositoryRegistration> = snapshot
+        let mut repositories: Vec<Registration> = snapshot
             .records()
             .iter()
             .map(|stored| stored.registration.clone())
@@ -489,10 +476,10 @@ impl RepositoryLedgerStore {
                 .as_str()
                 .cmp(right.repository_name.as_str())
         });
-        Ok(RepositoryCatalogListing { repositories })
+        Ok(CatalogListing { repositories })
     }
 
-    fn next_event_sequence(&self) -> Result<RepositoryEventSequence> {
+    fn next_event_sequence(&self) -> Result<EventSequence> {
         let snapshot = self.engine.match_records(QueryPlan::all(self.events))?;
         let next = snapshot
             .records()
@@ -501,15 +488,15 @@ impl RepositoryLedgerStore {
             .max()
             .unwrap_or(0)
             + 1;
-        Ok(RepositoryEventSequence::new(next))
+        Ok(EventSequence::new(next))
     }
 
     fn commit_matches_common_filters(
         &self,
-        commit: &StoredRepositoryCommit,
-        repository_name: Option<&RepositoryName>,
-        since_received_at: Option<&signal_repository_ledger::RepositoryTimestamp>,
-        until_received_at: Option<&signal_repository_ledger::RepositoryTimestamp>,
+        commit: &StoredCommit,
+        repository_name: Option<&Name>,
+        since_received_at: Option<&Timestamp>,
+        until_received_at: Option<&Timestamp>,
     ) -> bool {
         if let Some(repository_name) = repository_name {
             if commit.repository_name != *repository_name {
@@ -532,29 +519,27 @@ impl RepositoryLedgerStore {
     pub fn handle_ordinary_request(&self, request: ChannelRequest) -> ChannelReply {
         let checked = match request.into_checked() {
             Ok(checked) => checked,
-            Err((reason, _request)) => return Reply::rejected(reason),
+            Err((reason, _request)) => return CoreReply::rejected(reason),
         };
         if checked.operations.len() != 1 {
-            return Reply::rejected(RequestRejectionReason::Internal);
+            return CoreReply::rejected(RequestRejectionReason::Internal);
         }
 
         let operation = checked.operations.into_head();
         let verb = operation.verb;
         let operation_kind = operation.payload.operation_kind();
         match self.execute_ordinary_payload(operation.payload) {
-            Ok(payload) => Reply::completed(NonEmpty::single(SubReply::Ok { verb, payload })),
-            Err(error) => Reply::aborted(
+            Ok(payload) => CoreReply::completed(NonEmpty::single(SubReply::Ok { verb, payload })),
+            Err(error) => CoreReply::aborted(
                 0,
                 OperationFailureReason::DomainRejection,
                 NonEmpty::single(SubReply::Failed {
                     verb,
                     reason: OperationFailureReason::DomainRejection,
-                    detail: Some(RepositoryLedgerReply::RepositoryLedgerRequestUnimplemented(
-                        RepositoryLedgerRequestUnimplemented {
-                            operation: operation_kind,
-                            reason: error.as_unimplemented_reason(),
-                        },
-                    )),
+                    detail: Some(LedgerReply::RequestUnimplemented(RequestUnimplemented {
+                        operation: operation_kind,
+                        reason: error.as_unimplemented_reason(),
+                    })),
                 }),
             ),
         }
@@ -566,18 +551,18 @@ impl RepositoryLedgerStore {
     ) -> owner_signal_repository_ledger::ChannelReply {
         let checked = match request.into_checked() {
             Ok(checked) => checked,
-            Err((reason, _request)) => return Reply::rejected(reason),
+            Err((reason, _request)) => return CoreReply::rejected(reason),
         };
         if checked.operations.len() != 1 {
-            return Reply::rejected(RequestRejectionReason::Internal);
+            return CoreReply::rejected(RequestRejectionReason::Internal);
         }
 
         let operation = checked.operations.into_head();
         let verb = operation.verb;
         let operation_kind = operation.payload.operation_kind();
         match self.execute_owner_payload(operation.payload) {
-            Ok(payload) => Reply::completed(NonEmpty::single(SubReply::Ok { verb, payload })),
-            Err(error) => Reply::aborted(
+            Ok(payload) => CoreReply::completed(NonEmpty::single(SubReply::Ok { verb, payload })),
+            Err(error) => CoreReply::aborted(
                 0,
                 OperationFailureReason::DomainRejection,
                 NonEmpty::single(SubReply::Failed {
@@ -589,98 +574,68 @@ impl RepositoryLedgerStore {
         }
     }
 
-    fn execute_ordinary_payload(
-        &self,
-        payload: RepositoryLedgerRequest,
-    ) -> Result<RepositoryLedgerReply> {
+    fn execute_ordinary_payload(&self, payload: LedgerRequest) -> Result<LedgerReply> {
         match payload {
-            RepositoryLedgerRequest::RepositoryReceiveHookNotification(notification) => self
+            LedgerRequest::ReceiveHookNotification(notification) => self
                 .record_hook_notification(notification)
-                .map(RepositoryLedgerReply::RepositoryEventRecorded),
-            RepositoryLedgerRequest::RepositoryPushObservation(observation) => self
+                .map(LedgerReply::EventRecorded),
+            LedgerRequest::PushObservation(observation) => self
                 .record_push_observation(observation)
-                .map(RepositoryLedgerReply::RepositoryEventRecorded),
-            RepositoryLedgerRequest::RepositoryEventQuery(query) => self
-                .repository_events(query)
-                .map(RepositoryLedgerReply::RepositoryEventListing),
-            RepositoryLedgerRequest::RepositoryRecentRepositoriesQuery(query) => self
+                .map(LedgerReply::EventRecorded),
+            LedgerRequest::EventQuery(query) => {
+                self.repository_events(query).map(LedgerReply::EventListing)
+            }
+            LedgerRequest::RecentRepositoriesQuery(query) => self
                 .recent_repositories(query)
-                .map(RepositoryLedgerReply::RepositoryRecentRepositoriesListing),
-            RepositoryLedgerRequest::RepositoryChangedFileQuery(query) => self
+                .map(LedgerReply::RecentRepositoriesListing),
+            LedgerRequest::ChangedFileQuery(query) => self
                 .changed_files(query)
-                .map(RepositoryLedgerReply::RepositoryChangedFileListing),
-            RepositoryLedgerRequest::RepositoryCommitMessageQuery(query) => self
-                .commit_messages(query)
-                .map(RepositoryLedgerReply::RepositoryCommitListing),
-            RepositoryLedgerRequest::RepositoryCatalogQuery(query) => {
-                let RepositoryCatalogListing { repositories } = self.repository_catalog()?;
+                .map(LedgerReply::ChangedFileListing),
+            LedgerRequest::CommitMessageQuery(query) => {
+                self.commit_messages(query).map(LedgerReply::CommitListing)
+            }
+            LedgerRequest::CatalogQuery(query) => {
+                let CatalogListing { repositories } = self.repository_catalog()?;
                 let _ = query;
-                Ok(RepositoryLedgerReply::RepositoryCatalogListing(
-                    RepositoryCatalogListing { repositories },
-                ))
+                Ok(LedgerReply::CatalogListing(CatalogListing { repositories }))
             }
         }
     }
 
-    fn execute_owner_payload(
-        &self,
-        payload: owner_signal_repository_ledger::OwnerRepositoryLedgerRequest,
-    ) -> Result<owner_signal_repository_ledger::OwnerRepositoryLedgerReply> {
+    fn execute_owner_payload(&self, payload: OwnerRequest) -> Result<OwnerReply> {
         match payload {
-            owner_signal_repository_ledger::OwnerRepositoryLedgerRequest::RegisterRepository(
-                registration,
-            ) => {
+            OwnerRequest::Registration(registration) => {
                 let repository_name = registration.repository_name.clone();
                 self.register_repository(registration)?;
-                Ok(owner_signal_repository_ledger::OwnerRepositoryLedgerReply::RepositoryRegistered(
-                    RepositoryRegistered { repository_name },
-                ))
+                Ok(OwnerReply::Registered(Registered { repository_name }))
             }
-            owner_signal_repository_ledger::OwnerRepositoryLedgerRequest::RetireRepository(
-                request,
-            ) => self
-                .retire_repository(request)
-                .map(owner_signal_repository_ledger::OwnerRepositoryLedgerReply::RepositoryRetired),
-            owner_signal_repository_ledger::OwnerRepositoryLedgerRequest::SetSpoolDirectoryPolicy(
-                policy,
-            ) => self.set_spool_directory_policy(policy).map(
-                owner_signal_repository_ledger::OwnerRepositoryLedgerReply::SpoolDirectoryPolicySet,
-            ),
-            owner_signal_repository_ledger::OwnerRepositoryLedgerRequest::SetMirrorPolicy(
-                policy,
-            ) => self
+            OwnerRequest::Retirement(request) => {
+                self.retire_repository(request).map(OwnerReply::Retired)
+            }
+            OwnerRequest::SpoolDirectoryPolicy(policy) => self
+                .set_spool_directory_policy(policy)
+                .map(OwnerReply::SpoolDirectoryPolicySet),
+            OwnerRequest::MirrorPolicy(policy) => self
                 .set_mirror_policy(policy)
-                .map(owner_signal_repository_ledger::OwnerRepositoryLedgerReply::MirrorPolicySet),
+                .map(OwnerReply::MirrorPolicySet),
         }
     }
 }
 
-impl RepositoryLedgerError {
-    fn as_unimplemented_reason(&self) -> RepositoryLedgerUnimplementedReason {
+impl Error {
+    fn as_unimplemented_reason(&self) -> UnimplementedReason {
         match self {
-            Self::Engine(_) => RepositoryLedgerUnimplementedReason::StoreUnavailable,
-            _ => RepositoryLedgerUnimplementedReason::NotInPrototypeScope,
+            Self::Engine(_) => UnimplementedReason::StoreUnavailable,
+            _ => UnimplementedReason::NotInPrototypeScope,
         }
     }
 
-    fn into_owner_unimplemented(
-        self,
-        operation: owner_signal_repository_ledger::OwnerRepositoryLedgerOperationKind,
-    ) -> owner_signal_repository_ledger::OwnerRepositoryLedgerReply {
+    fn into_owner_unimplemented(self, operation: OwnerOperationKind) -> OwnerReply {
         let reason = match self {
-            Self::Engine(_) => {
-                owner_signal_repository_ledger::OwnerRepositoryLedgerUnimplementedReason::StoreUnavailable
-            }
-            _ => {
-                owner_signal_repository_ledger::OwnerRepositoryLedgerUnimplementedReason::NotInPrototypeScope
-            }
+            Self::Engine(_) => OwnerUnimplementedReason::StoreUnavailable,
+            _ => OwnerUnimplementedReason::NotInPrototypeScope,
         };
-        owner_signal_repository_ledger::OwnerRepositoryLedgerReply::OwnerRepositoryLedgerRequestUnimplemented(
-            owner_signal_repository_ledger::OwnerRepositoryLedgerRequestUnimplemented {
-                operation,
-                reason,
-            },
-        )
+        OwnerReply::RequestUnimplemented(OwnerRequestUnimplemented { operation, reason })
     }
 }
 

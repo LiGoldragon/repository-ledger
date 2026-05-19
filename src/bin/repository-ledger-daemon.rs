@@ -2,7 +2,7 @@ fn main() {
     match run() {
         Ok(()) => {}
         Err(error) => {
-            eprintln!("(RepositoryLedgerDaemonRejected \"{error}\")");
+            eprintln!("(DaemonRejected \"{error}\")");
             std::process::exit(2);
         }
     }
@@ -10,5 +10,5 @@ fn main() {
 
 fn run() -> repository_ledger::Result<()> {
     let configuration = nota_config::ConfigurationSource::from_argv()?.decode()?;
-    repository_ledger::daemon::RepositoryLedgerDaemon::new(configuration).run()
+    repository_ledger::daemon::Daemon::new(configuration).run()
 }

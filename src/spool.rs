@@ -3,11 +3,10 @@ use std::path::{Path, PathBuf};
 
 use nota_codec::{Decoder, NotaDecode};
 use signal_repository_ledger::{
-    GitoliteUser, RefUpdate, RepositoryName, RepositoryObjectIdentifier,
-    RepositoryReceiveHookNotification, RepositoryRefName, RepositoryTimestamp,
+    GitoliteUser, Name, ObjectIdentifier, ReceiveHookNotification, RefName, RefUpdate, Timestamp,
 };
 
-use crate::{RepositoryLedgerStore, Result};
+use crate::{Result, Store};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpoolIngestSummary {
@@ -38,7 +37,7 @@ impl SpoolDirectory {
         Self { path: path.into() }
     }
 
-    pub fn ingest_into(&self, store: &RepositoryLedgerStore) -> Result<SpoolIngestSummary> {
+    pub fn ingest_into(&self, store: &Store) -> Result<SpoolIngestSummary> {
         if !self.path.exists() {
             return Ok(SpoolIngestSummary::empty());
         }
@@ -87,18 +86,17 @@ impl SpoolNotificationFile {
         })
     }
 
-    fn decode(&self) -> Result<RepositoryReceiveHookNotification> {
+    fn decode(&self) -> Result<ReceiveHookNotification> {
         let mut decoder = Decoder::new(&self.text);
-        decoder.expect_record_head("RepositoryReceiveHookNotification")?;
-        let repository_name =
-            RepositoryName::new(Self::decode_named_string(&mut decoder, "RepositoryName")?);
+        decoder.expect_record_head("ReceiveHookNotification")?;
+        let repository_name = Name::new(Self::decode_named_string(&mut decoder, "Name")?);
         let gitolite_user =
             GitoliteUser::new(Self::decode_named_string(&mut decoder, "GitoliteUser")?);
         let received_at = Self::decode_received_at(&mut decoder)?;
         let daemon_socket_present = Self::decode_daemon_socket_present(&mut decoder)?;
         let ref_updates = Self::decode_ref_updates(&mut decoder)?;
         decoder.expect_record_end()?;
-        Ok(RepositoryReceiveHookNotification {
+        Ok(ReceiveHookNotification {
             repository_name,
             gitolite_user,
             received_at,
@@ -107,9 +105,9 @@ impl SpoolNotificationFile {
         })
     }
 
-    fn decode_received_at(decoder: &mut Decoder<'_>) -> nota_codec::Result<RepositoryTimestamp> {
+    fn decode_received_at(decoder: &mut Decoder<'_>) -> nota_codec::Result<Timestamp> {
         let value = Self::decode_named_string(decoder, "ReceivedAt")?;
-        Ok(RepositoryTimestamp::new(value))
+        Ok(Timestamp::new(value))
     }
 
     fn decode_named_string(
@@ -139,9 +137,9 @@ impl SpoolNotificationFile {
             let ref_name = String::decode(decoder)?;
             decoder.expect_record_end()?;
             updates.push(RefUpdate {
-                old_object_identifier: RepositoryObjectIdentifier::new(old_object_identifier),
-                new_object_identifier: RepositoryObjectIdentifier::new(new_object_identifier),
-                ref_name: RepositoryRefName::new(ref_name),
+                old_object_identifier: ObjectIdentifier::new(old_object_identifier),
+                new_object_identifier: ObjectIdentifier::new(new_object_identifier),
+                ref_name: RefName::new(ref_name),
             });
         }
         decoder.expect_record_end()?;

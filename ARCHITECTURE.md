@@ -4,10 +4,10 @@
 local Gitolite server.
 
 The current CriomOS `repository-receive` hook invokes the `repository-ledger`
-CLI with a `RepositoryPushObservation` NOTA request. The CLI is the ordinary
+CLI with a `PushObservation` NOTA request. The CLI is the ordinary
 Signal client: it connects to `repository-ledger-daemon`, sends the typed
 request, and prints the typed reply. The hook still writes a
-`RepositoryReceiveHookNotification` spool file as a fallback if the CLI
+`ReceiveHookNotification` spool file as a fallback if the CLI
 submission fails.
 
 ## Component Shape
@@ -53,7 +53,7 @@ flowchart LR
 - The daemon has separate listener actors for ordinary and owner contracts.
 - Owner-only configuration arrives only through `owner-signal-repository-ledger`.
 - The daemon startup configuration is one typed
-  `RepositoryLedgerDaemonConfiguration` record from `signal-repository-ledger`.
+  `DaemonConfiguration` record from `signal-repository-ledger`.
 - Every stored record is a typed Rust record; no line-oriented log is source of
   truth.
 - NOTA appears at CLI/spool/debug edges. Inter-component traffic is Signal.
@@ -63,7 +63,7 @@ flowchart LR
   in the first implementation.
 - Time-window queries compare received-at timestamps in their canonical
   UTC-sortable string form. This is acceptable while the contract still uses
-  `RepositoryTimestamp(String)` and should collapse into native timestamp
+  `Timestamp(String)` and should collapse into native timestamp
   comparison when the workspace timestamp type lands.
 
 ## Current Slice
@@ -87,30 +87,30 @@ This repository now proves the first live triad boundary:
 The direct hook entry is:
 
 ```nota
-(RepositoryPushObservation
-  (RepositoryReceiveHookNotification
+(PushObservation
+  (ReceiveHookNotification
     "repository-ledger"
     "gitolite-admin"
     "20260519T140736Z"
     true
     [(RefUpdate "old-commit" "new-commit" "refs/heads/main")])
-  [(RepositoryCommitObservation
+  [(CommitObservation
       "new-commit"
       "refs/heads/main"
       "2026-05-19T14:07:36+00:00"
       "add repository query surface\n\nLonger commit body."
-      [(RepositoryFileChange "M" "src/lib.rs" None)
-       (RepositoryFileChange "A" "tests/store.rs" None)])])
+      [(FileChange "M" "src/lib.rs" None)
+       (FileChange "A" "tests/store.rs" None)])])
 ```
 
 The basic agent queries are:
 
 ```nota
 # Which repositories were edited recently?
-(RepositoryRecentRepositoriesQuery (Some "20260519T000000Z") 20)
+(RecentRepositoriesQuery (Some "20260519T000000Z") 20)
 
 # Which files changed in a repository during a time period?
-(RepositoryChangedFileQuery
+(ChangedFileQuery
   (Some "repository-ledger")
   (Some "20260519T000000Z")
   (Some "20260519T235959Z")
@@ -118,14 +118,14 @@ The basic agent queries are:
   100)
 
 # Which changed files contain a path substring?
-(RepositoryChangedFileQuery None None None (Some "ARCHITECTURE") 50)
+(ChangedFileQuery None None None (Some "ARCHITECTURE") 50)
 
 # Which commits have messages containing a string?
-(RepositoryCommitMessageQuery None None None (Some "query surface") 50)
+(CommitMessageQuery None None None (Some "query surface") 50)
 ```
 
 The query examples above show the canonical record grammar. The current
 generated channel request CLI also accepts bare present optional fields, for
-example `(RepositoryCommitMessageQuery testing None None "query surface" 50)`.
+example `(CommitMessageQuery testing None None "query surface" 50)`.
 That is a temporary `signal_channel!` request-syntax gap, not the desired
 contract grammar.

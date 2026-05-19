@@ -4,7 +4,7 @@ use signal_core::{
     HandshakeRejectionReason, HandshakeReply, ProtocolVersion, SIGNAL_CORE_PROTOCOL_VERSION,
 };
 
-use crate::{RepositoryLedgerError, Result};
+use crate::{Error, Result};
 
 const LENGTH_PREFIX_BYTES: usize = 4;
 
@@ -18,7 +18,7 @@ impl FrameBytes {
         match reader.read_exact(&mut prefix) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
-                return Err(RepositoryLedgerError::ConnectionClosed);
+                return Err(Error::ConnectionClosed);
             }
             Err(error) => return Err(error.into()),
         }
