@@ -5,10 +5,10 @@ local Gitolite server.
 
 The current CriomOS `repository-receive` hook writes
 `RepositoryReceiveHookNotification` NOTA files into
-`/var/lib/repository-ledger/spool`. The daemon will consume those files and
-assert typed repository events into its sema-engine database. Once the daemon
-socket exists, the hook can also detect that socket and future work can replace
-spool-only delivery with a direct Signal submit path.
+`/var/lib/repository-ledger/spool`. The daemon consumes those files and asserts
+typed repository events into its sema-engine database. Once the receive hook can
+speak binary Signal directly, spool delivery becomes the recovery path rather
+than the main path.
 
 ## Component Shape
 
@@ -33,7 +33,8 @@ flowchart LR
 - One `sema-engine` database.
 - Repository event records from post-push hook notifications.
 - Repository registration policy.
-- Future mirror policy state.
+- Spool directory policy.
+- Mirror policy state.
 
 ## Does Not Own
 
@@ -46,17 +47,21 @@ flowchart LR
 - The CLI talks only to `repository-ledger-daemon`.
 - The daemon has separate listener actors for ordinary and owner contracts.
 - Owner-only configuration arrives only through `owner-signal-repository-ledger`.
+- The daemon startup configuration is one typed
+  `RepositoryLedgerDaemonConfiguration` record from `signal-repository-ledger`.
 - Every stored record is a typed Rust record; no line-oriented log is source of
   truth.
 - NOTA appears at CLI/spool/debug edges. Inter-component traffic is Signal.
 
-## First Slice
+## Current Slice
 
-This initial repository proves the storage boundary:
+This repository now proves the first live triad boundary:
 
 - Contract crates compile with `signal_channel!`.
 - The runtime crate can open a sema-engine database.
 - Hook notifications can be stored as typed repository events.
 - The server-side Gitolite repositories exist and can receive pushes.
-
-The daemon socket actors are the next slice.
+- The daemon can answer ordinary `Match` queries and owner `Mutate` requests
+  over Signal frames.
+- The spool reader parses the current CriomOS hook projection and moves files to
+  `processed/` after commit.

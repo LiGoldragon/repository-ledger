@@ -1,11 +1,14 @@
 fn main() {
-    let arguments: Vec<String> = std::env::args().collect();
-    if arguments.len() != 2 || arguments[1].starts_with("--") {
-        eprintln!(
-            "(RepositoryLedgerDaemonRejected \"expected exactly one NOTA or Signal configuration argument\")"
-        );
-        std::process::exit(2);
+    match run() {
+        Ok(()) => {}
+        Err(error) => {
+            eprintln!("(RepositoryLedgerDaemonRejected \"{error}\")");
+            std::process::exit(2);
+        }
     }
+}
 
-    println!("(RepositoryLedgerDaemonUnimplemented \"socket actors land in the next slice\")");
+fn run() -> repository_ledger::Result<()> {
+    let configuration = nota_config::ConfigurationSource::from_argv()?.decode()?;
+    repository_ledger::daemon::RepositoryLedgerDaemon::new(configuration).run()
 }
