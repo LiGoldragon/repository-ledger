@@ -6,8 +6,9 @@ use repository_ledger::daemon::Daemon;
 use repository_ledger::frame_io::{OrdinaryFrameIo, OwnerFrameIo};
 use repository_ledger::spool::SpoolDirectory;
 use signal_frame::{
-    ExchangeFrameBody, ExchangeIdentifier, ExchangeLane, HandshakeReply, HandshakeRequest,
-    LaneSequence, Reply as FrameReply, RequestPayload, SessionEpoch, SubReply,
+    AcceptedOutcome, ExchangeFrameBody, ExchangeIdentifier, ExchangeLane, HandshakeReply,
+    HandshakeRequest, LaneSequence, Reply as FrameReply, RequestBuilder, RequestPayload,
+    SessionEpoch, SubReply,
 };
 use signal_repository_ledger::{
     Catalog, ChangedFiles, Class, CommitMessage, CommitMessages, CommitObservation, Events,
@@ -242,6 +243,46 @@ fn spool_files_are_ingested_and_moved_to_processed() {
             .as_str(),
         "1111111111111111111111111111111111111111"
     );
+}
+
+#[test]
+fn ordinary_signal_executor_rejects_multi_operation_batches_before_commit() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let store = Store::open(directory.path().join("repository-ledger.redb")).expect("store opens");
+
+    let request = RequestBuilder::new()
+        .with(LedgerOperation::Receive(notification(
+            "repository-ledger",
+            "1111111111111111111111111111111111111111",
+        )))
+        .with(LedgerOperation::Receive(notification(
+            "signal-repository-ledger",
+            "2222222222222222222222222222222222222222",
+        )))
+        .build()
+        .expect("multi-operation request");
+
+    let reply = store.handle_ordinary_request(request);
+    match reply {
+        FrameReply::Accepted {
+            outcome: AcceptedOutcome::BatchAborted { commit, retry, .. },
+            per_operation,
+        } => {
+            assert_eq!(per_operation.len(), 2);
+            assert_eq!(commit, signal_frame::CommitStatus::NotCommitted);
+            assert_eq!(retry, signal_frame::RetryClassification::NotRetryable);
+        }
+        other => panic!("expected executor batch abort, got {other:?}"),
+    }
+
+    let listing = store
+        .repository_events(Events {
+            repository_name: None,
+            since_sequence: None,
+            limit: QueryLimit::new(10),
+        })
+        .expect("events list");
+    assert_eq!(listing.events.len(), 0);
 }
 
 #[test]

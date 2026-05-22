@@ -3,6 +3,7 @@
 //! `repository-ledger-daemon` owns this store and exposes ordinary and owner
 //! Signal sockets over it.
 
+use std::future;
 use std::path::Path;
 
 pub mod client;
@@ -11,10 +12,8 @@ pub mod frame_io;
 pub mod spool;
 
 use owner_signal_repository_ledger::{
-    MirrorPolicy, MirrorPolicySet, Operation as OwnerOperation,
-    OperationKind as OwnerOperationKind, Registered, Reply as OwnerReply,
-    RequestUnimplemented as OwnerRequestUnimplemented, Retired, Retirement, SpoolDirectoryPolicy,
-    SpoolDirectoryPolicySet, UnimplementedReason as OwnerUnimplementedReason,
+    MirrorPolicy, MirrorPolicySet, Operation as OwnerOperation, Registered, Reply as OwnerReply,
+    Retired, Retirement, SpoolDirectoryPolicy, SpoolDirectoryPolicySet,
 };
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use sema::SchemaVersion;
@@ -22,17 +21,20 @@ use sema_engine::{
     Assertion, Engine, EngineOpen, EngineRecord, Mutation, QueryPlan, RecordKey, Retraction,
     TableDescriptor, TableName, TableReference,
 };
-use signal_frame::{
-    NonEmpty, OperationFailureReason, Reply as FrameReply, RequestRejectionReason, SubReply,
+use signal_executor::{
+    BatchEffects, BatchPlan, CommandEffect, CommandExecutor, Executor, Lowering, ObserverSet,
+    OperationEffects, OperationPlan,
 };
+use signal_frame::{BatchFailureReason, CommitStatus, NonEmpty, RetryClassification};
 use signal_repository_ledger::{
     Catalog, CatalogListing, ChangedFile, ChangedFileListing, ChangedFiles, Commit, CommitListing,
     CommitMessages, CommitObservation, Event, EventListing, EventRecorded, EventSequence, Events,
     Name, Operation as LedgerOperation, PushObservation, Query, QueryLimit, QueryResult,
     ReceiveHookNotification, RecentRepositories, RecentRepositoriesListing, RecentRepository,
     Registration, Reply as LedgerReply, ReplyEnvelope as LedgerChannelReply,
-    Request as LedgerChannelRequest, RequestUnimplemented, Timestamp, UnimplementedReason,
+    Request as LedgerChannelRequest, Timestamp,
 };
+use signal_sema::{SemaOperation, SemaOutcome, ToSemaOperation, ToSemaOutcome};
 
 const SCHEMA_VERSION: u32 = 1;
 const REPOSITORY_EVENTS: TableName = TableName::new("repository_events");
@@ -78,6 +80,16 @@ pub enum Error {
 
     #[error("signal request failed during execution")]
     SignalRequestFailed,
+
+    #[error(
+        "signal executor accepted only one repository-ledger operation per atomic batch, received {operation_count}"
+    )]
+    UnsupportedAtomicBatch { operation_count: usize },
+
+    #[error(
+        "signal executor accepted only one command per operation plan, received {command_count}"
+    )]
+    UnsupportedAtomicOperationPlan { command_count: usize },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -166,6 +178,132 @@ pub struct StoredMirrorPolicy {
 impl EngineRecord for StoredMirrorPolicy {
     fn record_key(&self) -> RecordKey {
         RecordKey::new(self.policy.repository_name.as_str().to_owned())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LedgerCommand {
+    RecordHookNotification(ReceiveHookNotification),
+    RecordPushObservation(PushObservation),
+    ReadQuery(Query),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LedgerEffect {
+    EventRecorded(EventRecorded),
+    QueryResult(QueryResult),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OwnerCommand {
+    RegisterRepository(Registration),
+    RetireRepository(Retirement),
+    SetSpoolDirectoryPolicy(SpoolDirectoryPolicy),
+    SetMirrorPolicy(MirrorPolicy),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OwnerEffect {
+    Registered(Registered),
+    Retired(Retired),
+    SpoolDirectoryPolicySet(SpoolDirectoryPolicySet),
+    MirrorPolicySet(MirrorPolicySet),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LedgerLowering;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OwnerLowering;
+
+struct LedgerCommandExecutor<'store> {
+    store: &'store Store,
+}
+
+struct OwnerCommandExecutor<'store> {
+    store: &'store Store,
+}
+
+impl LedgerCommand {
+    fn from_operation(operation: LedgerOperation) -> Self {
+        match operation {
+            LedgerOperation::Receive(notification) => Self::RecordHookNotification(notification),
+            LedgerOperation::Observe(observation) => Self::RecordPushObservation(observation),
+            LedgerOperation::Query(query) => Self::ReadQuery(query),
+        }
+    }
+}
+
+impl LedgerEffect {
+    fn into_reply(self) -> LedgerReply {
+        match self {
+            Self::EventRecorded(recorded) => LedgerReply::EventRecorded(recorded),
+            Self::QueryResult(result) => LedgerReply::QueryResult(result),
+        }
+    }
+}
+
+impl OwnerCommand {
+    fn from_operation(operation: OwnerOperation) -> Self {
+        match operation {
+            OwnerOperation::Register(registration) => Self::RegisterRepository(registration),
+            OwnerOperation::Retire(retirement) => Self::RetireRepository(retirement),
+            OwnerOperation::SetSpoolDirectory(policy) => Self::SetSpoolDirectoryPolicy(policy),
+            OwnerOperation::SetMirror(policy) => Self::SetMirrorPolicy(policy),
+        }
+    }
+}
+
+impl OwnerEffect {
+    fn into_reply(self) -> OwnerReply {
+        match self {
+            Self::Registered(registered) => OwnerReply::Registered(registered),
+            Self::Retired(retired) => OwnerReply::Retired(retired),
+            Self::SpoolDirectoryPolicySet(policy) => OwnerReply::SpoolDirectoryPolicySet(policy),
+            Self::MirrorPolicySet(policy) => OwnerReply::MirrorPolicySet(policy),
+        }
+    }
+}
+
+impl ToSemaOperation for LedgerCommand {
+    fn to_sema_operation(&self) -> SemaOperation {
+        match self {
+            Self::RecordHookNotification(_) | Self::RecordPushObservation(_) => {
+                SemaOperation::Assert
+            }
+            Self::ReadQuery(_) => SemaOperation::Match,
+        }
+    }
+}
+
+impl ToSemaOutcome for LedgerEffect {
+    fn to_sema_outcome(&self) -> SemaOutcome {
+        match self {
+            Self::EventRecorded(_) => SemaOutcome::Asserted,
+            Self::QueryResult(_) => SemaOutcome::Matched,
+        }
+    }
+}
+
+impl ToSemaOperation for OwnerCommand {
+    fn to_sema_operation(&self) -> SemaOperation {
+        match self {
+            Self::RegisterRepository(_)
+            | Self::SetSpoolDirectoryPolicy(_)
+            | Self::SetMirrorPolicy(_) => SemaOperation::Mutate,
+            Self::RetireRepository(_) => SemaOperation::Retract,
+        }
+    }
+}
+
+impl ToSemaOutcome for OwnerEffect {
+    fn to_sema_outcome(&self) -> SemaOutcome {
+        match self {
+            Self::Registered(_) | Self::SpoolDirectoryPolicySet(_) | Self::MirrorPolicySet(_) => {
+                SemaOutcome::Mutated
+            }
+            Self::Retired(_) => SemaOutcome::Retracted,
+        }
     }
 }
 
@@ -517,66 +655,32 @@ impl Store {
     }
 
     pub fn handle_ordinary_request(&self, request: LedgerChannelRequest) -> LedgerChannelReply {
-        if request.payloads().len() != 1 {
-            return FrameReply::rejected(RequestRejectionReason::Internal);
-        }
-
-        let operation = request.payloads.into_head();
-        let operation_kind = operation.operation_kind();
-        let query = match &operation {
-            LedgerOperation::Query(query) => Some(query.kind()),
-            _ => None,
-        };
-        match self.execute_ordinary_payload(operation) {
-            Ok(payload) => FrameReply::committed(NonEmpty::single(SubReply::Ok(payload))),
-            Err(error) => FrameReply::operation_aborted(
-                0,
-                OperationFailureReason::DomainRejection,
-                NonEmpty::single(SubReply::Failed {
-                    reason: OperationFailureReason::DomainRejection,
-                    detail: Some(LedgerReply::RequestUnimplemented(RequestUnimplemented {
-                        operation: operation_kind,
-                        query,
-                        reason: error.as_unimplemented_reason(),
-                    })),
-                }),
-            ),
-        }
+        let command_executor = LedgerCommandExecutor { store: self };
+        let observers = ObserverSet::no_op();
+        let mut executor = Executor::new(LedgerLowering, command_executor, observers);
+        futures_executor::block_on(executor.execute(request))
     }
 
     pub fn handle_owner_request(
         &self,
         request: owner_signal_repository_ledger::ChannelRequest,
     ) -> owner_signal_repository_ledger::ChannelReply {
-        if request.payloads().len() != 1 {
-            return FrameReply::rejected(RequestRejectionReason::Internal);
-        }
-
-        let operation = request.payloads.into_head();
-        let operation_kind = operation.operation_kind();
-        match self.execute_owner_payload(operation) {
-            Ok(payload) => FrameReply::committed(NonEmpty::single(SubReply::Ok(payload))),
-            Err(error) => FrameReply::operation_aborted(
-                0,
-                OperationFailureReason::DomainRejection,
-                NonEmpty::single(SubReply::Failed {
-                    reason: OperationFailureReason::DomainRejection,
-                    detail: Some(error.into_owner_unimplemented(operation_kind)),
-                }),
-            ),
-        }
+        let command_executor = OwnerCommandExecutor { store: self };
+        let observers = ObserverSet::no_op();
+        let mut executor = Executor::new(OwnerLowering, command_executor, observers);
+        futures_executor::block_on(executor.execute(request))
     }
 
-    fn execute_ordinary_payload(&self, payload: LedgerOperation) -> Result<LedgerReply> {
-        match payload {
-            LedgerOperation::Receive(notification) => self
+    fn execute_ledger_command(&self, command: LedgerCommand) -> Result<LedgerEffect> {
+        match command {
+            LedgerCommand::RecordHookNotification(notification) => self
                 .record_hook_notification(notification)
-                .map(LedgerReply::EventRecorded),
-            LedgerOperation::Observe(observation) => self
+                .map(LedgerEffect::EventRecorded),
+            LedgerCommand::RecordPushObservation(observation) => self
                 .record_push_observation(observation)
-                .map(LedgerReply::EventRecorded),
-            LedgerOperation::Query(query) => {
-                self.execute_query(query).map(LedgerReply::QueryResult)
+                .map(LedgerEffect::EventRecorded),
+            LedgerCommand::ReadQuery(query) => {
+                self.execute_query(query).map(LedgerEffect::QueryResult)
             }
         }
     }
@@ -597,40 +701,179 @@ impl Store {
         }
     }
 
-    fn execute_owner_payload(&self, payload: OwnerOperation) -> Result<OwnerReply> {
-        match payload {
-            OwnerOperation::Register(registration) => {
+    fn execute_owner_command(&self, command: OwnerCommand) -> Result<OwnerEffect> {
+        match command {
+            OwnerCommand::RegisterRepository(registration) => {
                 let repository_name = registration.repository_name.clone();
                 self.register_repository(registration)?;
-                Ok(OwnerReply::Registered(Registered { repository_name }))
+                Ok(OwnerEffect::Registered(Registered { repository_name }))
             }
-            OwnerOperation::Retire(request) => {
-                self.retire_repository(request).map(OwnerReply::Retired)
+            OwnerCommand::RetireRepository(request) => {
+                self.retire_repository(request).map(OwnerEffect::Retired)
             }
-            OwnerOperation::SetSpoolDirectory(policy) => self
+            OwnerCommand::SetSpoolDirectoryPolicy(policy) => self
                 .set_spool_directory_policy(policy)
-                .map(OwnerReply::SpoolDirectoryPolicySet),
-            OwnerOperation::SetMirror(policy) => self
+                .map(OwnerEffect::SpoolDirectoryPolicySet),
+            OwnerCommand::SetMirrorPolicy(policy) => self
                 .set_mirror_policy(policy)
-                .map(OwnerReply::MirrorPolicySet),
+                .map(OwnerEffect::MirrorPolicySet),
         }
     }
 }
 
-impl Error {
-    fn as_unimplemented_reason(&self) -> UnimplementedReason {
+impl Lowering for LedgerLowering {
+    type Operation = LedgerOperation;
+    type Reply = LedgerReply;
+    type Command = LedgerCommand;
+    type ComponentEffect = LedgerEffect;
+
+    fn lower(
+        &self,
+        operation: &Self::Operation,
+    ) -> std::result::Result<OperationPlan<Self::Command>, Self::Reply> {
+        Ok(OperationPlan::single(LedgerCommand::from_operation(
+            operation.clone(),
+        )))
+    }
+
+    fn reply_from_effects(
+        &self,
+        _operation: &Self::Operation,
+        effects: &OperationEffects<Self::Command, Self::ComponentEffect>,
+    ) -> Self::Reply {
+        effects
+            .component_effects()
+            .last()
+            .expect("repository-ledger ledger operation effects are non-empty")
+            .clone()
+            .into_reply()
+    }
+}
+
+impl Lowering for OwnerLowering {
+    type Operation = OwnerOperation;
+    type Reply = OwnerReply;
+    type Command = OwnerCommand;
+    type ComponentEffect = OwnerEffect;
+
+    fn lower(
+        &self,
+        operation: &Self::Operation,
+    ) -> std::result::Result<OperationPlan<Self::Command>, Self::Reply> {
+        Ok(OperationPlan::single(OwnerCommand::from_operation(
+            operation.clone(),
+        )))
+    }
+
+    fn reply_from_effects(
+        &self,
+        _operation: &Self::Operation,
+        effects: &OperationEffects<Self::Command, Self::ComponentEffect>,
+    ) -> Self::Reply {
+        effects
+            .component_effects()
+            .last()
+            .expect("repository-ledger owner operation effects are non-empty")
+            .clone()
+            .into_reply()
+    }
+}
+
+impl<'store> LedgerCommandExecutor<'store> {
+    fn execute_atomic_batch_synchronously(
+        &self,
+        plan: BatchPlan<LedgerCommand>,
+    ) -> Result<BatchEffects<LedgerCommand, LedgerEffect>> {
+        let operation_count = plan.operations().len();
+        if operation_count != 1 {
+            return Err(Error::UnsupportedAtomicBatch { operation_count });
+        }
+        let operation_plan = plan.into_operations().into_head();
+        let command = single_command_from_operation_plan(operation_plan)?;
+        let effect = self.store.execute_ledger_command(command.clone())?;
+        Ok(BatchEffects::single(OperationEffects::new(
+            NonEmpty::single(CommandEffect::new(command, effect)),
+        )))
+    }
+}
+
+impl<'store> OwnerCommandExecutor<'store> {
+    fn execute_atomic_batch_synchronously(
+        &self,
+        plan: BatchPlan<OwnerCommand>,
+    ) -> Result<BatchEffects<OwnerCommand, OwnerEffect>> {
+        let operation_count = plan.operations().len();
+        if operation_count != 1 {
+            return Err(Error::UnsupportedAtomicBatch { operation_count });
+        }
+        let operation_plan = plan.into_operations().into_head();
+        let command = single_command_from_operation_plan(operation_plan)?;
+        let effect = self.store.execute_owner_command(command.clone())?;
+        Ok(BatchEffects::single(OperationEffects::new(
+            NonEmpty::single(CommandEffect::new(command, effect)),
+        )))
+    }
+}
+
+impl CommandExecutor for LedgerCommandExecutor<'_> {
+    type Command = LedgerCommand;
+    type ComponentEffect = LedgerEffect;
+    type Error = Error;
+
+    fn execute_atomic_batch(
+        &mut self,
+        plan: BatchPlan<Self::Command>,
+    ) -> impl future::Future<Output = Result<BatchEffects<Self::Command, Self::ComponentEffect>>>
+    + Send
+    + '_ {
+        future::ready(self.execute_atomic_batch_synchronously(plan))
+    }
+}
+
+impl CommandExecutor for OwnerCommandExecutor<'_> {
+    type Command = OwnerCommand;
+    type ComponentEffect = OwnerEffect;
+    type Error = Error;
+
+    fn execute_atomic_batch(
+        &mut self,
+        plan: BatchPlan<Self::Command>,
+    ) -> impl future::Future<Output = Result<BatchEffects<Self::Command, Self::ComponentEffect>>>
+    + Send
+    + '_ {
+        future::ready(self.execute_atomic_batch_synchronously(plan))
+    }
+}
+
+fn single_command_from_operation_plan<Command>(plan: OperationPlan<Command>) -> Result<Command> {
+    let commands = plan.into_commands();
+    let command_count = commands.len();
+    if command_count != 1 {
+        return Err(Error::UnsupportedAtomicOperationPlan { command_count });
+    }
+    Ok(commands.into_head())
+}
+
+impl signal_frame::BatchErrorClassification for Error {
+    fn batch_failure_reason(&self) -> BatchFailureReason {
         match self {
-            Self::Engine(_) => UnimplementedReason::StoreUnavailable,
-            _ => UnimplementedReason::NotInPrototypeScope,
+            Self::Io(_) | Self::ConnectionClosed => BatchFailureReason::EngineUnavailable,
+            _ => BatchFailureReason::EngineRejected,
         }
     }
 
-    fn into_owner_unimplemented(self, operation: OwnerOperationKind) -> OwnerReply {
-        let reason = match self {
-            Self::Engine(_) => OwnerUnimplementedReason::StoreUnavailable,
-            _ => OwnerUnimplementedReason::NotInPrototypeScope,
-        };
-        OwnerReply::RequestUnimplemented(OwnerRequestUnimplemented { operation, reason })
+    fn retry_classification(&self) -> RetryClassification {
+        match self {
+            Self::Io(_) | Self::ConnectionClosed | Self::Engine(_) => RetryClassification::Unknown,
+            _ => RetryClassification::NotRetryable,
+        }
+    }
+
+    fn commit_status(&self) -> CommitStatus {
+        match self {
+            Self::Engine(_) | Self::Io(_) | Self::ConnectionClosed => CommitStatus::Unknown,
+            _ => CommitStatus::NotCommitted,
+        }
     }
 }
 

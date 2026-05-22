@@ -96,6 +96,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e3450815272ef58cec6d564423f6e755e25379b217b0bc688e295ba24df6b1d"
 
 [[package]]
+name = "futures-executor"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "baf29c38818342a3b26b5b923639e7b1f4a61fc5e76102d4b1981c6dc7a7579d"
+dependencies = [
+ "futures-core",
+ "futures-task",
+ "futures-util",
+]
+
+[[package]]
 name = "futures-task"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -371,14 +382,17 @@ dependencies = [
 name = "repository-ledger"
 version = "0.1.0"
 dependencies = [
+ "futures-executor",
  "nota-codec",
  "nota-config",
  "owner-signal-repository-ledger",
  "rkyv",
  "sema",
  "sema-engine",
+ "signal-executor",
  "signal-frame",
  "signal-repository-ledger",
+ "signal-sema",
  "tempfile",
  "thiserror",
 ]
@@ -445,7 +459,7 @@ dependencies = [
 [[package]]
 name = "sema-engine"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/sema-engine.git?branch=main#4ad04d8bbeb9ae7dbcecb1402d0f5d098e7b420d"
+source = "git+https://github.com/LiGoldragon/sema-engine.git?branch=main#06cfa0ceb28c198c2c7fbc83238fe9f230ad5644"
 dependencies = [
  "rkyv",
  "sema",
@@ -524,6 +538,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "signal-executor"
+version = "0.1.0"
+source = "git+https://github.com/LiGoldragon/signal-executor.git?branch=main#63d3732fc0fe998a3b4b9ee0ff35da66a63a501a"
+dependencies = [
+ "rkyv",
+ "signal-frame",
+ "signal-sema",
+ "thiserror",
+]
+
+[[package]]
 name = "signal-frame"
 version = "0.1.0"
 source = "git+https://github.com/LiGoldragon/signal-frame.git?branch=main#653773b7d4c18d16efd977ada4d280876debefd7"
@@ -558,7 +583,7 @@ dependencies = [
 [[package]]
 name = "signal-sema"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-sema.git#e83fd008d2128bd15f1a7d2c7bd41f10da2de500"
+source = "git+https://github.com/LiGoldragon/signal-sema.git?branch=main#e83fd008d2128bd15f1a7d2c7bd41f10da2de500"
 dependencies = [
  "nota-codec",
  "rkyv",
