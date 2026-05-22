@@ -1,14 +1,17 @@
 use std::os::unix::net::UnixStream;
 use std::thread;
 
+use nota_codec::NotaEncode;
+use owner_signal_repository_ledger::Operation as OwnerOperation;
 use repository_ledger::Store;
+use repository_ledger::client::{CliRequest, CommandLineDispatch};
 use repository_ledger::daemon::Daemon;
 use repository_ledger::frame_io::{OrdinaryFrameIo, OwnerFrameIo};
 use repository_ledger::spool::SpoolDirectory;
 use signal_frame::{
-    AcceptedOutcome, ExchangeFrameBody, ExchangeIdentifier, ExchangeLane, HandshakeReply,
-    HandshakeRequest, LaneSequence, Reply as FrameReply, RequestBuilder, RequestPayload,
-    SessionEpoch, SubReply,
+    AcceptedOutcome, CommandLineSocket, ExchangeFrameBody, ExchangeIdentifier, ExchangeLane,
+    HandshakeReply, HandshakeRequest, LaneSequence, Reply as FrameReply, RequestBuilder,
+    RequestPayload, SessionEpoch, SubReply,
 };
 use signal_repository_ledger::{
     Catalog, ChangedFiles, Class, CommitMessage, CommitMessages, CommitObservation, Events,
@@ -60,6 +63,41 @@ fn changed_file(status: &str, path: &str) -> FileChange {
         status: FileStatus::new(status),
         path: FilePath::new(path),
         old_path: None,
+    }
+}
+
+fn encode_to_text(value: &impl NotaEncode) -> String {
+    let mut encoder = nota_codec::Encoder::new();
+    value.encode(&mut encoder).expect("encode");
+    encoder.into_string()
+}
+
+#[test]
+fn command_line_dispatch_routes_working_and_owner_heads() {
+    let dispatch = CommandLineDispatch::new();
+
+    assert_eq!(
+        dispatch.route_head("Receive").expect("working head"),
+        CommandLineSocket::Working
+    );
+    assert_eq!(
+        dispatch.route_head("Register").expect("owner head"),
+        CommandLineSocket::Owner
+    );
+}
+
+#[test]
+fn command_line_request_decodes_owner_contract_by_head() {
+    let request = OwnerOperation::Register(Registration {
+        repository_name: Name::new("repository-ledger"),
+        repository_class: Class::RuntimeComponent,
+    })
+    .into_request();
+    let text = encode_to_text(&request);
+
+    match CliRequest::from_nota(&text).expect("owner request") {
+        CliRequest::Owner(decoded) => assert_eq!(decoded, request),
+        other => panic!("expected owner request, got {other:?}"),
     }
 }
 

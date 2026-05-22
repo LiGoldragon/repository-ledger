@@ -54,6 +54,9 @@ pub enum Error {
     #[error("signal frame error: {0}")]
     Frame(#[from] signal_frame::FrameError),
 
+    #[error("command line route error: {0}")]
+    CommandLineRoute(#[from] signal_frame::CommandLineRouteError),
+
     #[error("NOTA decode error: {0}")]
     Nota(#[from] nota_codec::Error),
 
@@ -874,6 +877,12 @@ impl signal_frame::BatchErrorClassification for Error {
             Self::Engine(_) | Self::Io(_) | Self::ConnectionClosed => CommitStatus::Unknown,
             _ => CommitStatus::NotCommitted,
         }
+    }
+}
+
+impl Error {
+    pub fn command_line_route(error: signal_frame::CommandLineRouteError) -> Self {
+        Self::CommandLineRoute(error)
     }
 }
 
