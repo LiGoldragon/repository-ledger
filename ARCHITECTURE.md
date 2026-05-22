@@ -57,7 +57,7 @@ flowchart LR
 - Every stored record is a typed Rust record; no line-oriented log is source of
   truth.
 - NOTA appears at CLI/spool/debug edges. Inter-component traffic is Signal.
-- Agent discovery queries are first-class ordinary-contract `Match` requests:
+- Agent discovery queries are first-class ordinary-contract `Query` operations:
   recent repositories, changed files, and commit-message search.
 - Commit-message and file-path searches are case-insensitive substring matches
   in the first implementation.
@@ -75,8 +75,8 @@ This repository now proves the first live triad boundary:
 - Hook notifications can be stored as typed repository events.
 - Direct push observations can store commit messages and changed files.
 - The server-side Gitolite repositories exist and can receive pushes.
-- The daemon can answer ordinary `Match` queries and owner `Mutate` requests
-  over Signal frames.
+- The daemon can answer ordinary `Query` operations and owner policy
+  operations over Signal frames.
 - The daemon can answer agent-facing discovery queries for recent repositories,
   changed files, and commit messages.
 - The spool reader parses the fallback CriomOS hook projection and moves files
@@ -87,45 +87,43 @@ This repository now proves the first live triad boundary:
 The direct hook entry is:
 
 ```nota
-(PushObservation
-  (ReceiveHookNotification
+(Observe
+  ((ReceiveHookNotification
     "repository-ledger"
     "gitolite-admin"
     "20260519T140736Z"
-    true
+    True
     [(RefUpdate "old-commit" "new-commit" "refs/heads/main")])
-  [(CommitObservation
+   [(CommitObservation
       "new-commit"
       "refs/heads/main"
       "2026-05-19T14:07:36+00:00"
       "add repository query surface\n\nLonger commit body."
       [(FileChange "M" "src/lib.rs" None)
-       (FileChange "A" "tests/store.rs" None)])])
+       (FileChange "A" "tests/store.rs" None)])]))
 ```
 
 The basic agent queries are:
 
 ```nota
 # Which repositories were edited recently?
-(RecentRepositoriesQuery (Some "20260519T000000Z") 20)
+(Query (RecentRepositories ((Some "20260519T000000Z") 20)))
 
 # Which files changed in a repository during a time period?
-(ChangedFileQuery
+(Query (ChangedFiles
   (Some "repository-ledger")
   (Some "20260519T000000Z")
   (Some "20260519T235959Z")
   None
-  100)
+  100))
 
 # Which changed files contain a path substring?
-(ChangedFileQuery None None None (Some "ARCHITECTURE") 50)
+(Query (ChangedFiles (None None None (Some "ARCHITECTURE") 50)))
 
 # Which commits have messages containing a string?
-(CommitMessageQuery None None None (Some "query surface") 50)
+(Query (CommitMessages (None None None (Some "query surface") 50)))
 ```
 
-The query examples above show the canonical record grammar. The current
-generated channel request CLI also accepts bare present optional fields, for
-example `(CommitMessageQuery testing None None "query surface" 50)`.
-That is a temporary `signal_channel!` request-syntax gap, not the desired
-contract grammar.
+The query examples above show the contract-local operation head (`Query`) and
+the query sum variant inside it. Present optional values use `(Some value)`;
+absent values use `None`.

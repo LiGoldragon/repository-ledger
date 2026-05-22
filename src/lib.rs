@@ -11,8 +11,8 @@ pub mod frame_io;
 pub mod spool;
 
 use owner_signal_repository_ledger::{
-    MirrorPolicy, MirrorPolicySet, OperationKind as OwnerOperationKind, Registered,
-    Reply as OwnerReply, Request as OwnerRequest,
+    MirrorPolicy, MirrorPolicySet, Operation as OwnerOperation,
+    OperationKind as OwnerOperationKind, Registered, Reply as OwnerReply,
     RequestUnimplemented as OwnerRequestUnimplemented, Retired, Retirement, SpoolDirectoryPolicy,
     SpoolDirectoryPolicySet, UnimplementedReason as OwnerUnimplementedReason,
 };
@@ -22,16 +22,16 @@ use sema_engine::{
     Assertion, Engine, EngineOpen, EngineRecord, Mutation, QueryPlan, RecordKey, Retraction,
     TableDescriptor, TableName, TableReference,
 };
-use signal_core::{
-    NonEmpty, OperationFailureReason, Reply as CoreReply, RequestRejectionReason, SubReply,
+use signal_frame::{
+    NonEmpty, OperationFailureReason, Reply as FrameReply, RequestRejectionReason, SubReply,
 };
 use signal_repository_ledger::{
-    CatalogListing, ChangedFile, ChangedFileListing, ChangedFileQuery, ChannelReply,
-    ChannelRequest, Commit, CommitListing, CommitMessageQuery, CommitObservation, Event,
-    EventListing, EventQuery, EventRecorded, EventSequence, Name, PushObservation, QueryLimit,
-    ReceiveHookNotification, RecentRepositoriesListing, RecentRepositoriesQuery, RecentRepository,
-    Registration, Reply as LedgerReply, Request as LedgerRequest, RequestUnimplemented, Timestamp,
-    UnimplementedReason,
+    Catalog, CatalogListing, ChangedFile, ChangedFileListing, ChangedFiles, Commit, CommitListing,
+    CommitMessages, CommitObservation, Event, EventListing, EventRecorded, EventSequence, Events,
+    Name, Operation as LedgerOperation, PushObservation, Query, QueryLimit, QueryResult,
+    ReceiveHookNotification, RecentRepositories, RecentRepositoriesListing, RecentRepository,
+    Registration, Reply as LedgerReply, ReplyEnvelope as LedgerChannelReply,
+    Request as LedgerChannelRequest, RequestUnimplemented, Timestamp, UnimplementedReason,
 };
 
 const SCHEMA_VERSION: u32 = 1;
@@ -50,7 +50,7 @@ pub enum Error {
     Io(#[from] std::io::Error),
 
     #[error("signal frame error: {0}")]
-    Frame(#[from] signal_core::FrameError),
+    Frame(#[from] signal_frame::FrameError),
 
     #[error("NOTA decode error: {0}")]
     Nota(#[from] nota_codec::Error),
@@ -306,7 +306,7 @@ impl Store {
         })
     }
 
-    pub fn repository_events(&self, query: EventQuery) -> Result<EventListing> {
+    pub fn repository_events(&self, query: Events) -> Result<EventListing> {
         let snapshot = self.engine.match_records(QueryPlan::all(self.events))?;
         let mut events: Vec<Event> = snapshot
             .records()
@@ -335,7 +335,7 @@ impl Store {
 
     pub fn recent_repositories(
         &self,
-        query: RecentRepositoriesQuery,
+        query: RecentRepositories,
     ) -> Result<RecentRepositoriesListing> {
         let snapshot = self.engine.match_records(QueryPlan::all(self.events))?;
         let mut repositories: Vec<RecentRepository> = Vec::new();
@@ -381,7 +381,7 @@ impl Store {
         Ok(RecentRepositoriesListing { repositories })
     }
 
-    pub fn changed_files(&self, query: ChangedFileQuery) -> Result<ChangedFileListing> {
+    pub fn changed_files(&self, query: ChangedFiles) -> Result<ChangedFileListing> {
         let snapshot = self.engine.match_records(QueryPlan::all(self.commits))?;
         let mut files = Vec::new();
         for commit in snapshot.records() {
@@ -423,7 +423,7 @@ impl Store {
         Ok(ChangedFileListing { files })
     }
 
-    pub fn commit_messages(&self, query: CommitMessageQuery) -> Result<CommitListing> {
+    pub fn commit_messages(&self, query: CommitMessages) -> Result<CommitListing> {
         let snapshot = self.engine.match_records(QueryPlan::all(self.commits))?;
         let mut commits: Vec<Commit> = snapshot
             .records()
@@ -516,28 +516,27 @@ impl Store {
         true
     }
 
-    pub fn handle_ordinary_request(&self, request: ChannelRequest) -> ChannelReply {
-        let checked = match request.into_checked() {
-            Ok(checked) => checked,
-            Err((reason, _request)) => return CoreReply::rejected(reason),
-        };
-        if checked.operations.len() != 1 {
-            return CoreReply::rejected(RequestRejectionReason::Internal);
+    pub fn handle_ordinary_request(&self, request: LedgerChannelRequest) -> LedgerChannelReply {
+        if request.payloads().len() != 1 {
+            return FrameReply::rejected(RequestRejectionReason::Internal);
         }
 
-        let operation = checked.operations.into_head();
-        let verb = operation.verb;
-        let operation_kind = operation.payload.operation_kind();
-        match self.execute_ordinary_payload(operation.payload) {
-            Ok(payload) => CoreReply::completed(NonEmpty::single(SubReply::Ok { verb, payload })),
-            Err(error) => CoreReply::aborted(
+        let operation = request.payloads.into_head();
+        let operation_kind = operation.operation_kind();
+        let query = match &operation {
+            LedgerOperation::Query(query) => Some(query.kind()),
+            _ => None,
+        };
+        match self.execute_ordinary_payload(operation) {
+            Ok(payload) => FrameReply::committed(NonEmpty::single(SubReply::Ok(payload))),
+            Err(error) => FrameReply::operation_aborted(
                 0,
                 OperationFailureReason::DomainRejection,
                 NonEmpty::single(SubReply::Failed {
-                    verb,
                     reason: OperationFailureReason::DomainRejection,
                     detail: Some(LedgerReply::RequestUnimplemented(RequestUnimplemented {
                         operation: operation_kind,
+                        query,
                         reason: error.as_unimplemented_reason(),
                     })),
                 }),
@@ -549,24 +548,18 @@ impl Store {
         &self,
         request: owner_signal_repository_ledger::ChannelRequest,
     ) -> owner_signal_repository_ledger::ChannelReply {
-        let checked = match request.into_checked() {
-            Ok(checked) => checked,
-            Err((reason, _request)) => return CoreReply::rejected(reason),
-        };
-        if checked.operations.len() != 1 {
-            return CoreReply::rejected(RequestRejectionReason::Internal);
+        if request.payloads().len() != 1 {
+            return FrameReply::rejected(RequestRejectionReason::Internal);
         }
 
-        let operation = checked.operations.into_head();
-        let verb = operation.verb;
-        let operation_kind = operation.payload.operation_kind();
-        match self.execute_owner_payload(operation.payload) {
-            Ok(payload) => CoreReply::completed(NonEmpty::single(SubReply::Ok { verb, payload })),
-            Err(error) => CoreReply::aborted(
+        let operation = request.payloads.into_head();
+        let operation_kind = operation.operation_kind();
+        match self.execute_owner_payload(operation) {
+            Ok(payload) => FrameReply::committed(NonEmpty::single(SubReply::Ok(payload))),
+            Err(error) => FrameReply::operation_aborted(
                 0,
                 OperationFailureReason::DomainRejection,
                 NonEmpty::single(SubReply::Failed {
-                    verb,
                     reason: OperationFailureReason::DomainRejection,
                     detail: Some(error.into_owner_unimplemented(operation_kind)),
                 }),
@@ -574,48 +567,50 @@ impl Store {
         }
     }
 
-    fn execute_ordinary_payload(&self, payload: LedgerRequest) -> Result<LedgerReply> {
+    fn execute_ordinary_payload(&self, payload: LedgerOperation) -> Result<LedgerReply> {
         match payload {
-            LedgerRequest::ReceiveHookNotification(notification) => self
+            LedgerOperation::Receive(notification) => self
                 .record_hook_notification(notification)
                 .map(LedgerReply::EventRecorded),
-            LedgerRequest::PushObservation(observation) => self
+            LedgerOperation::Observe(observation) => self
                 .record_push_observation(observation)
                 .map(LedgerReply::EventRecorded),
-            LedgerRequest::EventQuery(query) => {
-                self.repository_events(query).map(LedgerReply::EventListing)
-            }
-            LedgerRequest::RecentRepositoriesQuery(query) => self
-                .recent_repositories(query)
-                .map(LedgerReply::RecentRepositoriesListing),
-            LedgerRequest::ChangedFileQuery(query) => self
-                .changed_files(query)
-                .map(LedgerReply::ChangedFileListing),
-            LedgerRequest::CommitMessageQuery(query) => {
-                self.commit_messages(query).map(LedgerReply::CommitListing)
-            }
-            LedgerRequest::CatalogQuery(query) => {
-                let CatalogListing { repositories } = self.repository_catalog()?;
-                let _ = query;
-                Ok(LedgerReply::CatalogListing(CatalogListing { repositories }))
+            LedgerOperation::Query(query) => {
+                self.execute_query(query).map(LedgerReply::QueryResult)
             }
         }
     }
 
-    fn execute_owner_payload(&self, payload: OwnerRequest) -> Result<OwnerReply> {
+    fn execute_query(&self, query: Query) -> Result<QueryResult> {
+        match query {
+            Query::Events(query) => self.repository_events(query).map(QueryResult::Events),
+            Query::RecentRepositories(query) => self
+                .recent_repositories(query)
+                .map(QueryResult::RecentRepositories),
+            Query::ChangedFiles(query) => self.changed_files(query).map(QueryResult::ChangedFiles),
+            Query::CommitMessages(query) => self.commit_messages(query).map(QueryResult::Commits),
+            Query::Catalog(query) => {
+                let CatalogListing { repositories } = self.repository_catalog()?;
+                let Catalog = query;
+                Ok(QueryResult::Catalog(CatalogListing { repositories }))
+            }
+        }
+    }
+
+    fn execute_owner_payload(&self, payload: OwnerOperation) -> Result<OwnerReply> {
         match payload {
-            OwnerRequest::Registration(registration) => {
+            OwnerOperation::Register(registration) => {
                 let repository_name = registration.repository_name.clone();
                 self.register_repository(registration)?;
                 Ok(OwnerReply::Registered(Registered { repository_name }))
             }
-            OwnerRequest::Retirement(request) => {
+            OwnerOperation::Retire(request) => {
                 self.retire_repository(request).map(OwnerReply::Retired)
             }
-            OwnerRequest::SpoolDirectoryPolicy(policy) => self
+            OwnerOperation::SetSpoolDirectory(policy) => self
                 .set_spool_directory_policy(policy)
                 .map(OwnerReply::SpoolDirectoryPolicySet),
-            OwnerRequest::MirrorPolicy(policy) => self
+            OwnerOperation::SetMirror(policy) => self
                 .set_mirror_policy(policy)
                 .map(OwnerReply::MirrorPolicySet),
         }

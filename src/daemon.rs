@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use signal_core::ExchangeFrameBody;
+use signal_frame::ExchangeFrameBody;
 use signal_repository_ledger::DaemonConfiguration;
 
 use crate::frame_io::{OrdinaryFrameIo, OwnerFrameIo, handshake_reply_for};

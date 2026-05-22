@@ -5,15 +5,16 @@ use repository_ledger::Store;
 use repository_ledger::daemon::Daemon;
 use repository_ledger::frame_io::{OrdinaryFrameIo, OwnerFrameIo};
 use repository_ledger::spool::SpoolDirectory;
-use signal_core::{
+use signal_frame::{
     ExchangeFrameBody, ExchangeIdentifier, ExchangeLane, HandshakeReply, HandshakeRequest,
-    LaneSequence, Reply as CoreReply, RequestPayload, SessionEpoch, SubReply,
+    LaneSequence, Reply as FrameReply, RequestPayload, SessionEpoch, SubReply,
 };
 use signal_repository_ledger::{
-    CatalogQuery, ChangedFileQuery, Class, CommitMessage, CommitMessageQuery, CommitObservation,
-    EventQuery, FileChange, FilePath, FileStatus, GitoliteUser, Name, ObjectIdentifier,
-    PushObservation, QueryLimit, ReceiveHookNotification, RecentRepositoriesQuery, RefName,
-    RefUpdate, Registration, Reply as LedgerReply, Request as LedgerRequest, TextSearch, Timestamp,
+    Catalog, ChangedFiles, Class, CommitMessage, CommitMessages, CommitObservation, Events,
+    FileChange, FilePath, FileStatus, GitoliteUser, Name, ObjectIdentifier,
+    Operation as LedgerOperation, PushObservation, Query, QueryLimit, QueryResult,
+    ReceiveHookNotification, RecentRepositories, RefName, RefUpdate, Registration,
+    Reply as LedgerReply, TextSearch, Timestamp,
 };
 
 fn notification(repository_name: &str, new_object_identifier: &str) -> ReceiveHookNotification {
@@ -83,7 +84,7 @@ fn hook_notifications_are_committed_as_typed_events() {
     assert_eq!(second.sequence.into_u64(), 2);
 
     let listing = store
-        .repository_events(EventQuery {
+        .repository_events(Events {
             repository_name: None,
             since_sequence: None,
             limit: QueryLimit::new(10),
@@ -150,7 +151,7 @@ fn push_observations_support_recent_repository_file_and_message_queries() {
         .expect("second observation");
 
     let recent = store
-        .recent_repositories(RecentRepositoriesQuery {
+        .recent_repositories(RecentRepositories {
             since_received_at: Some(Timestamp::new("20260519T000000Z")),
             limit: QueryLimit::new(10),
         })
@@ -166,7 +167,7 @@ fn push_observations_support_recent_repository_file_and_message_queries() {
     );
 
     let files = store
-        .changed_files(ChangedFileQuery {
+        .changed_files(ChangedFiles {
             repository_name: Some(Name::new("repository-ledger")),
             since_received_at: Some(Timestamp::new("20260519T000000Z")),
             until_received_at: Some(Timestamp::new("20260519T235959Z")),
@@ -178,7 +179,7 @@ fn push_observations_support_recent_repository_file_and_message_queries() {
     assert_eq!(files.files[0].path.as_str(), "tests/store.rs");
 
     let commits = store
-        .commit_messages(CommitMessageQuery {
+        .commit_messages(CommitMessages {
             repository_name: None,
             since_received_at: None,
             until_received_at: None,
@@ -206,7 +207,7 @@ fn spool_files_are_ingested_and_moved_to_processed() {
   (Name "repository-ledger")
   (GitoliteUser "gitolite-admin")
   (ReceivedAt "20260519T120000Z")
-  (DaemonSocketPresent false)
+  (DaemonSocketPresent False)
   (RefUpdates
     (RefUpdate "0000000000000000000000000000000000000000" "1111111111111111111111111111111111111111" "refs/heads/main")
   )
@@ -228,7 +229,7 @@ fn spool_files_are_ingested_and_moved_to_processed() {
     );
 
     let listing = store
-        .repository_events(EventQuery {
+        .repository_events(Events {
             repository_name: Some(Name::new("repository-ledger")),
             since_sequence: None,
             limit: QueryLimit::new(10),
@@ -270,7 +271,7 @@ fn ordinary_signal_socket_answers_catalog_query() {
     ));
 
     let exchange = fresh_exchange();
-    let request = LedgerRequest::CatalogQuery(CatalogQuery).into_request();
+    let request = LedgerOperation::Query(Query::Catalog(Catalog)).into_request();
     let frame =
         signal_repository_ledger::Frame::new(ExchangeFrameBody::Request { exchange, request });
     OrdinaryFrameIo::write(&mut client, &frame).expect("write request");
@@ -278,14 +279,13 @@ fn ordinary_signal_socket_answers_catalog_query() {
     match reply.into_body() {
         ExchangeFrameBody::Reply {
             exchange: reply_exchange,
-            reply: CoreReply::Accepted { per_operation, .. },
+            reply: FrameReply::Accepted { per_operation, .. },
         } => {
             assert_eq!(reply_exchange, exchange);
             match per_operation.into_head() {
-                SubReply::Ok {
-                    payload: LedgerReply::CatalogListing(listing),
-                    ..
-                } => assert_eq!(listing.repositories.len(), 1),
+                SubReply::Ok(LedgerReply::QueryResult(QueryResult::Catalog(listing))) => {
+                    assert_eq!(listing.repositories.len(), 1)
+                }
                 other => panic!("unexpected reply {other:?}"),
             }
         }
@@ -305,7 +305,7 @@ fn owner_signal_socket_registers_repository() {
     });
 
     let exchange = fresh_exchange();
-    let request = owner_signal_repository_ledger::Request::Registration(Registration {
+    let request = owner_signal_repository_ledger::Operation::Register(Registration {
         repository_name: Name::new("owner-signal-repository-ledger"),
         repository_class: Class::OwnerSignalContract,
     })
@@ -319,17 +319,16 @@ fn owner_signal_socket_registers_repository() {
     match reply.into_body() {
         ExchangeFrameBody::Reply {
             exchange: reply_exchange,
-            reply: CoreReply::Accepted { per_operation, .. },
+            reply: FrameReply::Accepted { per_operation, .. },
         } => {
             assert_eq!(reply_exchange, exchange);
             match per_operation.into_head() {
-                SubReply::Ok {
-                    payload: owner_signal_repository_ledger::Reply::Registered(registered),
-                    ..
-                } => assert_eq!(
-                    registered.repository_name.as_str(),
-                    "owner-signal-repository-ledger"
-                ),
+                SubReply::Ok(owner_signal_repository_ledger::Reply::Registered(registered)) => {
+                    assert_eq!(
+                        registered.repository_name.as_str(),
+                        "owner-signal-repository-ledger"
+                    )
+                }
                 other => panic!("unexpected reply {other:?}"),
             }
         }

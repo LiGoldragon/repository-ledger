@@ -4,11 +4,11 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
 use nota_codec::{Decoder, Encoder, NotaDecode, NotaEncode};
-use signal_core::{
+use signal_frame::{
     ExchangeFrameBody, ExchangeIdentifier, ExchangeLane, HandshakeReply, HandshakeRequest,
-    LaneSequence, Reply as CoreReply, RequestPayload, SessionEpoch, SubReply,
+    LaneSequence, Reply as FrameReply, SessionEpoch, SubReply,
 };
-use signal_repository_ledger::{ChannelRequest, Reply as LedgerReply, Request as LedgerRequest};
+use signal_repository_ledger::{Reply as LedgerReply, Request as LedgerRequest};
 
 use crate::frame_io::OrdinaryFrameIo;
 use crate::{Error, Result};
@@ -34,7 +34,7 @@ impl Client {
         Self::new(socket_path)
     }
 
-    pub fn send(&self, payload: LedgerRequest) -> Result<LedgerReply> {
+    pub fn send(&self, request: LedgerRequest) -> Result<LedgerReply> {
         let mut stream = UnixStream::connect(&self.socket_path)?;
         self.handshake(&mut stream)?;
         let exchange = ExchangeIdentifier::new(
@@ -42,7 +42,6 @@ impl Client {
             ExchangeLane::Connector,
             LaneSequence::first(),
         );
-        let request: ChannelRequest = payload.into_request();
         let frame =
             signal_repository_ledger::Frame::new(ExchangeFrameBody::Request { exchange, request });
         OrdinaryFrameIo::write(&mut stream, &frame)?;
@@ -81,13 +80,15 @@ impl Client {
         }
     }
 
-    fn unwrap_single_reply(reply: CoreReply<LedgerReply>) -> Result<LedgerReply> {
+    fn unwrap_single_reply(reply: FrameReply<LedgerReply>) -> Result<LedgerReply> {
         match reply {
-            CoreReply::Accepted { per_operation, .. } => match per_operation.into_head() {
-                SubReply::Ok { payload, .. } => Ok(payload),
-                _ => Err(Error::SignalRequestFailed),
-            },
-            CoreReply::Rejected { .. } => Err(Error::SignalRequestRejected),
+            FrameReply::Accepted { per_operation, .. } => {
+                match per_operation.into_head_and_tail() {
+                    (SubReply::Ok(payload), tail) if tail.is_empty() => Ok(payload),
+                    _ => Err(Error::SignalRequestFailed),
+                }
+            }
+            FrameReply::Rejected { .. } => Err(Error::SignalRequestRejected),
         }
     }
 }

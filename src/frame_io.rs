@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
 
-use signal_core::{
-    HandshakeRejectionReason, HandshakeReply, ProtocolVersion, SIGNAL_CORE_PROTOCOL_VERSION,
+use signal_frame::{
+    HandshakeRejectionReason, HandshakeReply, ProtocolVersion, SIGNAL_FRAME_PROTOCOL_VERSION,
 };
 
 use crate::{Error, Result};
@@ -72,7 +72,7 @@ impl OwnerFrameIo {
 }
 
 pub fn handshake_reply_for(peer: ProtocolVersion) -> HandshakeReply {
-    let local = SIGNAL_CORE_PROTOCOL_VERSION;
+    let local = SIGNAL_FRAME_PROTOCOL_VERSION;
     if local.accepts(peer) {
         HandshakeReply::Accepted(local)
     } else {
