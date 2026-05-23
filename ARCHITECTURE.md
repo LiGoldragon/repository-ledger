@@ -89,39 +89,41 @@ The direct hook entry is:
 ```nota
 (Observe
   ((ReceiveHookNotification
-    "repository-ledger"
-    "gitolite-admin"
-    "20260519T140736Z"
+    [repository-ledger]
+    [gitolite-admin]
+    [20260519T140736Z]
     True
-    [(RefUpdate "old-commit" "new-commit" "refs/heads/main")])
+    [(RefUpdate [old-commit] [new-commit] [refs/heads/main])])
    [(CommitObservation
-      "new-commit"
-      "refs/heads/main"
-      "2026-05-19T14:07:36+00:00"
-      "add repository query surface\n\nLonger commit body."
-      [(FileChange "M" "src/lib.rs" None)
-       (FileChange "A" "tests/store.rs" None)])]))
+      [new-commit]
+      [refs/heads/main]
+      [2026-05-19T14:07:36+00:00]
+      [|add repository query surface
+
+Longer commit body.|]
+      [(FileChange [M] [src/lib.rs] None)
+       (FileChange [A] [tests/store.rs] None)])]))
 ```
 
 The basic agent queries are:
 
 ```nota
 # Which repositories were edited recently?
-(Query (RecentRepositories ((Some "20260519T000000Z") 20)))
+(Query (RecentRepositories ((Some [20260519T000000Z]) 20)))
 
 # Which files changed in a repository during a time period?
 (Query (ChangedFiles
-  (Some "repository-ledger")
-  (Some "20260519T000000Z")
-  (Some "20260519T235959Z")
+  (Some [repository-ledger])
+  (Some [20260519T000000Z])
+  (Some [20260519T235959Z])
   None
   100))
 
 # Which changed files contain a path substring?
-(Query (ChangedFiles (None None None (Some "ARCHITECTURE") 50)))
+(Query (ChangedFiles (None None None (Some [ARCHITECTURE]) 50)))
 
 # Which commits have messages containing a string?
-(Query (CommitMessages (None None None (Some "query surface") 50)))
+(Query (CommitMessages (None None None (Some [query surface]) 50)))
 ```
 
 The query examples above show the contract-local operation head (`Query`) and

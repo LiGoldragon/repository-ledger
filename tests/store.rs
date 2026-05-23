@@ -243,12 +243,12 @@ fn spool_files_are_ingested_and_moved_to_processed() {
     std::fs::write(
         &file,
         r#"(ReceiveHookNotification
-  (Name "repository-ledger")
-  (GitoliteUser "gitolite-admin")
-  (ReceivedAt "20260519T120000Z")
+  (Name [repository-ledger])
+  (GitoliteUser [gitolite-admin])
+  (ReceivedAt [20260519T120000Z])
   (DaemonSocketPresent False)
   (RefUpdates
-    (RefUpdate "0000000000000000000000000000000000000000" "1111111111111111111111111111111111111111" "refs/heads/main")
+    (RefUpdate [0000000000000000000000000000000000000000] [1111111111111111111111111111111111111111] [refs/heads/main])
   )
 )"#,
     )
