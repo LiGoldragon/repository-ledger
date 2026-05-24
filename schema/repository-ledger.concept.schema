@@ -1,0 +1,40 @@
+{}
+
+[
+  (Receive [HookEvent])
+  (Query [RecentRepositories ChangedFiles Commits Catalog])
+  (Observe [Repository])
+]
+
+[
+  (Register [Repository])
+  (Policy [Spool Mirror])
+]
+
+[]
+
+{
+  Receive [(HookEvent HookEvent)]
+  Query [(RecentRepositories RecentRepositories) (ChangedFiles ChangedFiles) (Commits Commits) (Catalog Catalog)]
+  Observe [(Repository Repository)]
+  Register [(Repository Repository)]
+  Policy [(Spool Spool) (Mirror Mirror)]
+  HookEvent (Text)
+  RecentRepositories (Text)
+  ChangedFiles (Text)
+  Commits (Text)
+  Catalog (Text)
+  Repository (Text)
+  Spool (Text)
+  Mirror (Text)
+  Text (String)
+  Identifier (u64)
+  Name (String)
+  Path (String)
+  Status [Concept Active Retired]
+}
+
+[
+  (Version 0 1)
+  (Status Concept)
+]
