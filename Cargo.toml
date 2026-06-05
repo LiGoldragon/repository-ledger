@@ -23,7 +23,7 @@ path = "src/bin/repository-ledger.rs"
 futures-executor               = "0.3"
 nota-codec                     = { git = "https://github.com/LiGoldragon/nota-codec.git", branch = "main" }
 nota-config                    = { git = "https://github.com/LiGoldragon/nota-config.git", branch = "main" }
-owner-signal-repository-ledger = { git = "https://github.com/LiGoldragon/owner-signal-repository-ledger", branch = "main" }
+meta-signal-repository-ledger = { git = "https://github.com/LiGoldragon/meta-signal-repository-ledger", branch = "main" }
 rkyv                           = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
 sema                           = { git = "https://github.com/LiGoldragon/sema.git" }
 sema-engine                    = { git = "https://github.com/LiGoldragon/sema-engine.git", branch = "main" }

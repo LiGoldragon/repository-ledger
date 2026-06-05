@@ -17,7 +17,7 @@ flowchart LR
     cli["repository-ledger<br/>thin CLI"]
     daemon["repository-ledger-daemon<br/>long-lived triad daemon"]
     ordinary["signal-repository-ledger<br/>ordinary socket"]
-    owner["owner-signal-repository-ledger<br/>owner socket"]
+    meta["meta-signal-repository-ledger<br/>meta socket"]
     store["repository-ledger.redb<br/>sema-engine"]
     gitolite["Gitolite post-receive hook<br/>repository-ledger CLI first"]
     spool["fallback spool files"]
@@ -27,7 +27,7 @@ flowchart LR
     gitolite --> spool
     spool --> daemon
     ordinary --> daemon
-    owner --> daemon
+    meta --> daemon
     daemon --> store
 ```
 
@@ -50,8 +50,8 @@ flowchart LR
 ## Constraints
 
 - The CLI talks only to `repository-ledger-daemon`.
-- The daemon has separate listener actors for ordinary and owner contracts.
-- Owner-only configuration arrives only through `owner-signal-repository-ledger`.
+- The daemon has separate listener actors for ordinary and meta contracts.
+- Meta-signal configuration arrives only through `meta-signal-repository-ledger`.
 - The daemon startup configuration is one typed
   `DaemonConfiguration` record from `signal-repository-ledger`.
 - Every stored record is a typed Rust record; no line-oriented log is source of
@@ -75,7 +75,7 @@ This repository now proves the first live triad boundary:
 - Hook notifications can be stored as typed repository events.
 - Direct push observations can store commit messages and changed files.
 - The server-side Gitolite repositories exist and can receive pushes.
-- The daemon can answer ordinary `Query` operations and owner policy
+- The daemon can answer ordinary `Query` operations and meta policy
   operations over Signal frames.
 - The daemon can answer agent-facing discovery queries for recent repositories,
   changed files, and commit messages.

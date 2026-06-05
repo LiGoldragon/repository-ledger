@@ -3,49 +3,49 @@ use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
+use meta_signal_repository_ledger::{ChannelRequest as MetaRequest, Reply as MetaReply};
 use nota_codec::{Decoder, Encoder, NotaDecode, NotaEncode, Token};
-use owner_signal_repository_ledger::{ChannelRequest as OwnerRequest, Reply as OwnerReply};
 use signal_frame::{
     CommandLineSocket, ExchangeFrameBody, ExchangeIdentifier, ExchangeLane, HandshakeReply,
     HandshakeRequest, LaneSequence, Reply as FrameReply, SessionEpoch, SubReply,
 };
 use signal_repository_ledger::{Reply as LedgerReply, Request as LedgerRequest};
 
-use crate::frame_io::{OrdinaryFrameIo, OwnerFrameIo};
+use crate::frame_io::{MetaFrameIo, OrdinaryFrameIo};
 use crate::{Error, Result};
 
 const DEFAULT_ORDINARY_SOCKET_PATH: &str = "/run/repository-ledger/repository-ledger.sock";
-const DEFAULT_OWNER_SOCKET_PATH: &str = "/run/repository-ledger/repository-ledger-owner.sock";
+const DEFAULT_META_SOCKET_PATH: &str = "/run/repository-ledger/repository-ledger-meta.sock";
 const ORDINARY_SOCKET_ENVIRONMENT_VARIABLE: &str = "REPOSITORY_LEDGER_SOCKET_PATH";
-const OWNER_SOCKET_ENVIRONMENT_VARIABLE: &str = "REPOSITORY_LEDGER_OWNER_SOCKET_PATH";
+const META_SOCKET_ENVIRONMENT_VARIABLE: &str = "REPOSITORY_LEDGER_META_SOCKET_PATH";
 
 signal_frame::signal_cli! {
     pub struct CommandLineDispatch {
         working signal_repository_ledger::Operation;
-        owner owner_signal_repository_ledger::Operation;
+        owner meta_signal_repository_ledger::Operation;
     }
 }
 
 pub struct Client {
     ordinary_socket_path: PathBuf,
-    owner_socket_path: PathBuf,
+    meta_socket_path: PathBuf,
 }
 
 impl Client {
     pub fn new(ordinary_socket_path: impl Into<PathBuf>) -> Self {
         Self::with_sockets(
             ordinary_socket_path,
-            PathBuf::from(DEFAULT_OWNER_SOCKET_PATH),
+            PathBuf::from(DEFAULT_META_SOCKET_PATH),
         )
     }
 
     pub fn with_sockets(
         ordinary_socket_path: impl Into<PathBuf>,
-        owner_socket_path: impl Into<PathBuf>,
+        meta_socket_path: impl Into<PathBuf>,
     ) -> Self {
         Self {
             ordinary_socket_path: ordinary_socket_path.into(),
-            owner_socket_path: owner_socket_path.into(),
+            meta_socket_path: meta_socket_path.into(),
         }
     }
 
@@ -53,10 +53,10 @@ impl Client {
         let ordinary_socket_path = std::env::var_os(ORDINARY_SOCKET_ENVIRONMENT_VARIABLE)
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_ORDINARY_SOCKET_PATH));
-        let owner_socket_path = std::env::var_os(OWNER_SOCKET_ENVIRONMENT_VARIABLE)
+        let meta_socket_path = std::env::var_os(META_SOCKET_ENVIRONMENT_VARIABLE)
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_OWNER_SOCKET_PATH));
-        Self::with_sockets(ordinary_socket_path, owner_socket_path)
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_META_SOCKET_PATH));
+        Self::with_sockets(ordinary_socket_path, meta_socket_path)
     }
 
     pub fn send_working(&self, request: LedgerRequest) -> Result<LedgerReply> {
@@ -82,27 +82,27 @@ impl Client {
         }
     }
 
-    pub fn send_owner(&self, request: OwnerRequest) -> Result<OwnerReply> {
-        let mut stream = UnixStream::connect(&self.owner_socket_path)?;
-        self.handshake_owner(&mut stream)?;
+    pub fn send_meta(&self, request: MetaRequest) -> Result<MetaReply> {
+        let mut stream = UnixStream::connect(&self.meta_socket_path)?;
+        self.handshake_meta(&mut stream)?;
         let exchange = ExchangeIdentifier::new(
             SessionEpoch::new(1),
             ExchangeLane::Connector,
             LaneSequence::first(),
         );
-        let frame = owner_signal_repository_ledger::Frame::new(ExchangeFrameBody::Request {
+        let frame = meta_signal_repository_ledger::Frame::new(ExchangeFrameBody::Request {
             exchange,
             request,
         });
-        OwnerFrameIo::write(&mut stream, &frame)?;
+        MetaFrameIo::write(&mut stream, &frame)?;
         stream.flush()?;
 
-        let reply = OwnerFrameIo::read(&mut stream)?;
+        let reply = MetaFrameIo::read(&mut stream)?;
         match reply.into_body() {
             ExchangeFrameBody::Reply {
                 exchange: reply_exchange,
                 reply,
-            } if reply_exchange == exchange => Self::unwrap_single_owner_reply(reply),
+            } if reply_exchange == exchange => Self::unwrap_single_meta_reply(reply),
             _ => Err(Error::UnexpectedFrame),
         }
     }
@@ -115,8 +115,8 @@ impl Client {
                 let reply = client.send_working(request)?;
                 encode_reply(&reply)
             }
-            CliRequest::Owner(request) => {
-                let reply = client.send_owner(request)?;
+            CliRequest::Meta(request) => {
+                let reply = client.send_meta(request)?;
                 encode_reply(&reply)
             }
         }
@@ -137,12 +137,12 @@ impl Client {
         }
     }
 
-    fn handshake_owner(&self, stream: &mut UnixStream) -> Result<()> {
-        let frame = owner_signal_repository_ledger::Frame::new(
-            ExchangeFrameBody::HandshakeRequest(HandshakeRequest::current()),
-        );
-        OwnerFrameIo::write(stream, &frame)?;
-        let reply = OwnerFrameIo::read(stream)?;
+    fn handshake_meta(&self, stream: &mut UnixStream) -> Result<()> {
+        let frame = meta_signal_repository_ledger::Frame::new(ExchangeFrameBody::HandshakeRequest(
+            HandshakeRequest::current(),
+        ));
+        MetaFrameIo::write(stream, &frame)?;
+        let reply = MetaFrameIo::read(stream)?;
         match reply.into_body() {
             ExchangeFrameBody::HandshakeReply(HandshakeReply::Accepted(_)) => Ok(()),
             ExchangeFrameBody::HandshakeReply(HandshakeReply::Rejected(_)) => {
@@ -164,7 +164,7 @@ impl Client {
         }
     }
 
-    fn unwrap_single_owner_reply(reply: FrameReply<OwnerReply>) -> Result<OwnerReply> {
+    fn unwrap_single_meta_reply(reply: FrameReply<MetaReply>) -> Result<MetaReply> {
         match reply {
             FrameReply::Accepted { per_operation, .. } => {
                 match per_operation.into_head_and_tail() {
@@ -180,7 +180,7 @@ impl Client {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliRequest {
     Working(LedgerRequest),
-    Owner(OwnerRequest),
+    Meta(MetaRequest),
 }
 
 impl CliRequest {
@@ -211,7 +211,7 @@ impl CliRequest {
     pub fn from_nota(text: &str) -> Result<Self> {
         match RequestHead::from_text(text)?.route()? {
             CommandLineSocket::Working => Self::decode_working(text),
-            CommandLineSocket::Owner => Self::decode_owner(text),
+            CommandLineSocket::Owner => Self::decode_meta(text),
         }
     }
 
@@ -222,11 +222,11 @@ impl CliRequest {
         Ok(Self::Working(payload))
     }
 
-    fn decode_owner(text: &str) -> Result<Self> {
+    fn decode_meta(text: &str) -> Result<Self> {
         let mut decoder = Decoder::new(text);
-        let payload = OwnerRequest::decode(&mut decoder)?;
+        let payload = MetaRequest::decode(&mut decoder)?;
         RequestEnd::new(&mut decoder).expect()?;
-        Ok(Self::Owner(payload))
+        Ok(Self::Meta(payload))
     }
 }
 

@@ -9,14 +9,14 @@ repository changes from the local Gitolite server into a sema-engine
 database. It is the `repository-ledger` CLI plus the long-lived
 `repository-ledger-daemon`. Paired with the contract repos
 `signal-repository-ledger` (ordinary receive-hook assertions and read
-queries) and `owner-signal-repository-ledger` (owner-only registration,
+queries) and `meta-signal-repository-ledger` (meta-signal registration,
 spool, and mirror policy).
 
 ## Repo-scope only
 
 This file carries daemon-side intent for `repository-ledger`. Wire
 vocabulary stays in `signal-repository-ledger/INTENT.md` and
-`owner-signal-repository-ledger/INTENT.md`. Workspace-shape intent
+`meta-signal-repository-ledger/INTENT.md`. Workspace-shape intent
 stays in `primary/INTENT.md`.
 
 ## Goals
@@ -37,9 +37,9 @@ stays in `primary/INTENT.md`.
 - **Every stored record is a typed Rust record.** No line-oriented log
   is the source of truth.
 - **Two authority tiers, two listener actors.** Ordinary contract
-  traffic and owner traffic have separate listener actors; owner-only
+  traffic and meta traffic have separate listener actors; meta-signal
   configuration (registration, spool policy, mirror policy) arrives only
-  through `owner-signal-repository-ledger`.
+  through `meta-signal-repository-ledger`.
 - **One typed startup configuration.** The daemon starts from one typed
   `DaemonConfiguration` record on its single argument.
 - **Inter-component traffic is Signal; NOTA renders only at edges.**
@@ -65,6 +65,6 @@ stays in `primary/INTENT.md`.
 - `ARCHITECTURE.md` — component shape, owned/not-owned boundaries,
   query shapes, current slice.
 - `../signal-repository-ledger/INTENT.md` — ordinary hook + query contract.
-- `../owner-signal-repository-ledger/INTENT.md` — owner-only policy contract.
+- `../meta-signal-repository-ledger/INTENT.md` — meta-signal policy contract.
 - `primary/skills/component-triad.md` — triad structure and wire layers.
 - `primary/skills/contract-repo.md` — contract-local operation verbs.

@@ -1,7 +1,7 @@
 //! Repository ledger runtime library.
 //!
-//! `repository-ledger-daemon` owns this store and exposes ordinary and owner
-//! Signal sockets over it.
+//! `repository-ledger-daemon` owns this store and exposes ordinary and
+//! meta-signal sockets over it.
 
 use std::future;
 use std::path::Path;
@@ -11,8 +11,8 @@ pub mod daemon;
 pub mod frame_io;
 pub mod spool;
 
-use owner_signal_repository_ledger::{
-    MirrorPolicy, MirrorPolicySet, Operation as OwnerOperation, Registered, Reply as OwnerReply,
+use meta_signal_repository_ledger::{
+    MirrorPolicy, MirrorPolicySet, Operation as MetaOperation, Registered, Reply as MetaReply,
     Retired, Retirement, SpoolDirectoryPolicy, SpoolDirectoryPolicySet,
 };
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
@@ -198,7 +198,7 @@ pub enum LedgerEffect {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OwnerCommand {
+pub enum MetaCommand {
     RegisterRepository(Registration),
     RetireRepository(Retirement),
     SetSpoolDirectoryPolicy(SpoolDirectoryPolicy),
@@ -206,7 +206,7 @@ pub enum OwnerCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OwnerEffect {
+pub enum MetaEffect {
     Registered(Registered),
     Retired(Retired),
     SpoolDirectoryPolicySet(SpoolDirectoryPolicySet),
@@ -217,13 +217,13 @@ pub enum OwnerEffect {
 struct LedgerLowering;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct OwnerLowering;
+struct MetaLowering;
 
 struct LedgerCommandExecutor<'store> {
     store: &'store Store,
 }
 
-struct OwnerCommandExecutor<'store> {
+struct MetaCommandExecutor<'store> {
     store: &'store Store,
 }
 
@@ -246,24 +246,24 @@ impl LedgerEffect {
     }
 }
 
-impl OwnerCommand {
-    fn from_operation(operation: OwnerOperation) -> Self {
+impl MetaCommand {
+    fn from_operation(operation: MetaOperation) -> Self {
         match operation {
-            OwnerOperation::Register(registration) => Self::RegisterRepository(registration),
-            OwnerOperation::Retire(retirement) => Self::RetireRepository(retirement),
-            OwnerOperation::SetSpoolDirectory(policy) => Self::SetSpoolDirectoryPolicy(policy),
-            OwnerOperation::SetMirror(policy) => Self::SetMirrorPolicy(policy),
+            MetaOperation::Register(registration) => Self::RegisterRepository(registration),
+            MetaOperation::Retire(retirement) => Self::RetireRepository(retirement),
+            MetaOperation::SetSpoolDirectory(policy) => Self::SetSpoolDirectoryPolicy(policy),
+            MetaOperation::SetMirror(policy) => Self::SetMirrorPolicy(policy),
         }
     }
 }
 
-impl OwnerEffect {
-    fn into_reply(self) -> OwnerReply {
+impl MetaEffect {
+    fn into_reply(self) -> MetaReply {
         match self {
-            Self::Registered(registered) => OwnerReply::Registered(registered),
-            Self::Retired(retired) => OwnerReply::Retired(retired),
-            Self::SpoolDirectoryPolicySet(policy) => OwnerReply::SpoolDirectoryPolicySet(policy),
-            Self::MirrorPolicySet(policy) => OwnerReply::MirrorPolicySet(policy),
+            Self::Registered(registered) => MetaReply::Registered(registered),
+            Self::Retired(retired) => MetaReply::Retired(retired),
+            Self::SpoolDirectoryPolicySet(policy) => MetaReply::SpoolDirectoryPolicySet(policy),
+            Self::MirrorPolicySet(policy) => MetaReply::MirrorPolicySet(policy),
         }
     }
 }
@@ -288,7 +288,7 @@ impl ToSemaOutcome for LedgerEffect {
     }
 }
 
-impl ToSemaOperation for OwnerCommand {
+impl ToSemaOperation for MetaCommand {
     fn to_sema_operation(&self) -> SemaOperation {
         match self {
             Self::RegisterRepository(_)
@@ -299,7 +299,7 @@ impl ToSemaOperation for OwnerCommand {
     }
 }
 
-impl ToSemaOutcome for OwnerEffect {
+impl ToSemaOutcome for MetaEffect {
     fn to_sema_outcome(&self) -> SemaOutcome {
         match self {
             Self::Registered(_) | Self::SpoolDirectoryPolicySet(_) | Self::MirrorPolicySet(_) => {
@@ -664,13 +664,13 @@ impl Store {
         futures_executor::block_on(executor.execute(request))
     }
 
-    pub fn handle_owner_request(
+    pub fn handle_meta_request(
         &self,
-        request: owner_signal_repository_ledger::ChannelRequest,
-    ) -> owner_signal_repository_ledger::ChannelReply {
-        let command_executor = OwnerCommandExecutor { store: self };
+        request: meta_signal_repository_ledger::ChannelRequest,
+    ) -> meta_signal_repository_ledger::ChannelReply {
+        let command_executor = MetaCommandExecutor { store: self };
         let observers = ObserverSet::no_op();
-        let mut executor = Executor::new(OwnerLowering, command_executor, observers);
+        let mut executor = Executor::new(MetaLowering, command_executor, observers);
         futures_executor::block_on(executor.execute(request))
     }
 
@@ -704,22 +704,22 @@ impl Store {
         }
     }
 
-    fn execute_owner_command(&self, command: OwnerCommand) -> Result<OwnerEffect> {
+    fn execute_meta_command(&self, command: MetaCommand) -> Result<MetaEffect> {
         match command {
-            OwnerCommand::RegisterRepository(registration) => {
+            MetaCommand::RegisterRepository(registration) => {
                 let repository_name = registration.repository_name.clone();
                 self.register_repository(registration)?;
-                Ok(OwnerEffect::Registered(Registered { repository_name }))
+                Ok(MetaEffect::Registered(Registered { repository_name }))
             }
-            OwnerCommand::RetireRepository(request) => {
-                self.retire_repository(request).map(OwnerEffect::Retired)
+            MetaCommand::RetireRepository(request) => {
+                self.retire_repository(request).map(MetaEffect::Retired)
             }
-            OwnerCommand::SetSpoolDirectoryPolicy(policy) => self
+            MetaCommand::SetSpoolDirectoryPolicy(policy) => self
                 .set_spool_directory_policy(policy)
-                .map(OwnerEffect::SpoolDirectoryPolicySet),
-            OwnerCommand::SetMirrorPolicy(policy) => self
+                .map(MetaEffect::SpoolDirectoryPolicySet),
+            MetaCommand::SetMirrorPolicy(policy) => self
                 .set_mirror_policy(policy)
-                .map(OwnerEffect::MirrorPolicySet),
+                .map(MetaEffect::MirrorPolicySet),
         }
     }
 }
@@ -753,17 +753,17 @@ impl Lowering for LedgerLowering {
     }
 }
 
-impl Lowering for OwnerLowering {
-    type Operation = OwnerOperation;
-    type Reply = OwnerReply;
-    type Command = OwnerCommand;
-    type ComponentEffect = OwnerEffect;
+impl Lowering for MetaLowering {
+    type Operation = MetaOperation;
+    type Reply = MetaReply;
+    type Command = MetaCommand;
+    type ComponentEffect = MetaEffect;
 
     fn lower(
         &self,
         operation: &Self::Operation,
     ) -> std::result::Result<OperationPlan<Self::Command>, Self::Reply> {
-        Ok(OperationPlan::single(OwnerCommand::from_operation(
+        Ok(OperationPlan::single(MetaCommand::from_operation(
             operation.clone(),
         )))
     }
@@ -776,7 +776,7 @@ impl Lowering for OwnerLowering {
         effects
             .component_effects()
             .last()
-            .expect("repository-ledger owner operation effects are non-empty")
+            .expect("repository-ledger meta operation effects are non-empty")
             .clone()
             .into_reply()
     }
@@ -800,18 +800,18 @@ impl<'store> LedgerCommandExecutor<'store> {
     }
 }
 
-impl<'store> OwnerCommandExecutor<'store> {
+impl<'store> MetaCommandExecutor<'store> {
     fn execute_atomic_batch_synchronously(
         &self,
-        plan: BatchPlan<OwnerCommand>,
-    ) -> Result<BatchEffects<OwnerCommand, OwnerEffect>> {
+        plan: BatchPlan<MetaCommand>,
+    ) -> Result<BatchEffects<MetaCommand, MetaEffect>> {
         let operation_count = plan.operations().len();
         if operation_count != 1 {
             return Err(Error::UnsupportedAtomicBatch { operation_count });
         }
         let operation_plan = plan.into_operations().into_head();
         let command = single_command_from_operation_plan(operation_plan)?;
-        let effect = self.store.execute_owner_command(command.clone())?;
+        let effect = self.store.execute_meta_command(command.clone())?;
         Ok(BatchEffects::single(OperationEffects::new(
             NonEmpty::single(CommandEffect::new(command, effect)),
         )))
@@ -833,9 +833,9 @@ impl CommandExecutor for LedgerCommandExecutor<'_> {
     }
 }
 
-impl CommandExecutor for OwnerCommandExecutor<'_> {
-    type Command = OwnerCommand;
-    type ComponentEffect = OwnerEffect;
+impl CommandExecutor for MetaCommandExecutor<'_> {
+    type Command = MetaCommand;
+    type ComponentEffect = MetaEffect;
     type Error = Error;
 
     fn execute_atomic_batch(

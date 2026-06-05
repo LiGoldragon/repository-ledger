@@ -9,7 +9,7 @@ use std::time::Duration;
 use signal_frame::ExchangeFrameBody;
 use signal_repository_ledger::DaemonConfiguration;
 
-use crate::frame_io::{OrdinaryFrameIo, OwnerFrameIo, handshake_reply_for};
+use crate::frame_io::{MetaFrameIo, OrdinaryFrameIo, handshake_reply_for};
 use crate::spool::{SpoolDirectory, SpoolIngestSummary};
 use crate::{Error, Result, Store};
 
@@ -30,9 +30,9 @@ impl Daemon {
             self.configuration.ordinary_socket_path.as_str(),
             self.configuration.ordinary_socket_mode.into_u32(),
         )?;
-        let owner_listener = Self::bind_socket(
-            self.configuration.owner_socket_path.as_str(),
-            self.configuration.owner_socket_mode.into_u32(),
+        let meta_listener = Self::bind_socket(
+            self.configuration.meta_socket_path.as_str(),
+            self.configuration.meta_socket_mode.into_u32(),
         )?;
         let spool_directory = PathBuf::from(self.configuration.spool_directory.as_str());
 
@@ -43,9 +43,9 @@ impl Daemon {
             Self::run_ordinary_listener(ordinary_listener, ordinary_store);
         });
 
-        let owner_store = Arc::clone(&store);
+        let meta_store = Arc::clone(&store);
         thread::spawn(move || {
-            Self::run_owner_listener(owner_listener, owner_store);
+            Self::run_meta_listener(meta_listener, meta_store);
         });
 
         loop {
@@ -86,24 +86,24 @@ impl Daemon {
         }
     }
 
-    pub fn serve_owner_stream(store: &Store, stream: &mut UnixStream) -> Result<()> {
+    pub fn serve_meta_stream(store: &Store, stream: &mut UnixStream) -> Result<()> {
         loop {
-            let frame = OwnerFrameIo::read(stream)?;
+            let frame = MetaFrameIo::read(stream)?;
             match frame.into_body() {
                 ExchangeFrameBody::HandshakeRequest(request) => {
-                    let reply = owner_signal_repository_ledger::Frame::new(
-                        owner_signal_repository_ledger::FrameBody::HandshakeReply(
+                    let reply = meta_signal_repository_ledger::Frame::new(
+                        meta_signal_repository_ledger::FrameBody::HandshakeReply(
                             handshake_reply_for(request.version()),
                         ),
                     );
-                    OwnerFrameIo::write(stream, &reply)?;
+                    MetaFrameIo::write(stream, &reply)?;
                 }
                 ExchangeFrameBody::Request { exchange, request } => {
-                    let reply = store.handle_owner_request(request);
-                    let frame = owner_signal_repository_ledger::Frame::new(
-                        owner_signal_repository_ledger::FrameBody::Reply { exchange, reply },
+                    let reply = store.handle_meta_request(request);
+                    let frame = meta_signal_repository_ledger::Frame::new(
+                        meta_signal_repository_ledger::FrameBody::Reply { exchange, reply },
                     );
-                    OwnerFrameIo::write(stream, &frame)?;
+                    MetaFrameIo::write(stream, &frame)?;
                     return Ok(());
                 }
                 _ => return Err(Error::UnexpectedFrame),
@@ -134,15 +134,15 @@ impl Daemon {
         }
     }
 
-    fn run_owner_listener(listener: UnixListener, store: Arc<Mutex<Store>>) {
+    fn run_meta_listener(listener: UnixListener, store: Arc<Mutex<Store>>) {
         for stream in listener.incoming() {
             match stream {
                 Ok(mut stream) => {
-                    if let Err(error) = Self::serve_owner_stream_shared(&store, &mut stream) {
-                        eprintln!("(OwnerSocketError \"{error}\")");
+                    if let Err(error) = Self::serve_meta_stream_shared(&store, &mut stream) {
+                        eprintln!("(MetaSocketError \"{error}\")");
                     }
                 }
-                Err(error) => eprintln!("(OwnerAcceptError \"{error}\")"),
+                Err(error) => eprintln!("(MetaAcceptError \"{error}\")"),
             }
         }
     }
@@ -200,29 +200,29 @@ impl Daemon {
         }
     }
 
-    fn serve_owner_stream_shared(store: &Arc<Mutex<Store>>, stream: &mut UnixStream) -> Result<()> {
+    fn serve_meta_stream_shared(store: &Arc<Mutex<Store>>, stream: &mut UnixStream) -> Result<()> {
         loop {
-            let frame = OwnerFrameIo::read(stream)?;
+            let frame = MetaFrameIo::read(stream)?;
             match frame.into_body() {
                 ExchangeFrameBody::HandshakeRequest(request) => {
-                    let reply = owner_signal_repository_ledger::Frame::new(
-                        owner_signal_repository_ledger::FrameBody::HandshakeReply(
+                    let reply = meta_signal_repository_ledger::Frame::new(
+                        meta_signal_repository_ledger::FrameBody::HandshakeReply(
                             handshake_reply_for(request.version()),
                         ),
                     );
-                    OwnerFrameIo::write(stream, &reply)?;
+                    MetaFrameIo::write(stream, &reply)?;
                 }
                 ExchangeFrameBody::Request { exchange, request } => {
                     let reply = {
                         let store = store
                             .lock()
                             .expect("repository ledger store mutex should not be poisoned");
-                        store.handle_owner_request(request)
+                        store.handle_meta_request(request)
                     };
-                    let frame = owner_signal_repository_ledger::Frame::new(
-                        owner_signal_repository_ledger::FrameBody::Reply { exchange, reply },
+                    let frame = meta_signal_repository_ledger::Frame::new(
+                        meta_signal_repository_ledger::FrameBody::Reply { exchange, reply },
                     );
-                    OwnerFrameIo::write(stream, &frame)?;
+                    MetaFrameIo::write(stream, &frame)?;
                     return Ok(());
                 }
                 _ => return Err(Error::UnexpectedFrame),

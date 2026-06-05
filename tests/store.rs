@@ -1,12 +1,12 @@
 use std::os::unix::net::UnixStream;
 use std::thread;
 
+use meta_signal_repository_ledger::Operation as MetaOperation;
 use nota_codec::NotaEncode;
-use owner_signal_repository_ledger::Operation as OwnerOperation;
 use repository_ledger::Store;
 use repository_ledger::client::{CliRequest, CommandLineDispatch};
 use repository_ledger::daemon::Daemon;
-use repository_ledger::frame_io::{OrdinaryFrameIo, OwnerFrameIo};
+use repository_ledger::frame_io::{MetaFrameIo, OrdinaryFrameIo};
 use repository_ledger::spool::SpoolDirectory;
 use signal_frame::{
     AcceptedOutcome, CommandLineSocket, ExchangeFrameBody, ExchangeIdentifier, ExchangeLane,
@@ -73,7 +73,7 @@ fn encode_to_text(value: &impl NotaEncode) -> String {
 }
 
 #[test]
-fn command_line_dispatch_routes_working_and_owner_heads() {
+fn command_line_dispatch_routes_working_and_meta_heads() {
     let dispatch = CommandLineDispatch::new();
 
     assert_eq!(
@@ -81,23 +81,23 @@ fn command_line_dispatch_routes_working_and_owner_heads() {
         CommandLineSocket::Working
     );
     assert_eq!(
-        dispatch.route_head("Register").expect("owner head"),
+        dispatch.route_head("Register").expect("meta head"),
         CommandLineSocket::Owner
     );
 }
 
 #[test]
-fn command_line_request_decodes_owner_contract_by_head() {
-    let request = OwnerOperation::Register(Registration {
+fn command_line_request_decodes_meta_contract_by_head() {
+    let request = MetaOperation::Register(Registration {
         repository_name: Name::new("repository-ledger"),
         repository_class: Class::RuntimeComponent,
     })
     .into_request();
     let text = encode_to_text(&request);
 
-    match CliRequest::from_nota(&text).expect("owner request") {
-        CliRequest::Owner(decoded) => assert_eq!(decoded, request),
-        other => panic!("expected owner request, got {other:?}"),
+    match CliRequest::from_nota(&text).expect("meta request") {
+        CliRequest::Meta(decoded) => assert_eq!(decoded, request),
+        other => panic!("expected meta request, got {other:?}"),
     }
 }
 
@@ -374,27 +374,25 @@ fn ordinary_signal_socket_answers_catalog_query() {
 }
 
 #[test]
-fn owner_signal_socket_registers_repository() {
+fn meta_signal_socket_registers_repository() {
     let directory = tempfile::tempdir().expect("temp dir");
     let store = Store::open(directory.path().join("repository-ledger.redb")).expect("store opens");
 
     let (mut client, mut server) = UnixStream::pair().expect("pair");
     let handle = thread::spawn(move || {
-        Daemon::serve_owner_stream(&store, &mut server).expect("serve");
+        Daemon::serve_meta_stream(&store, &mut server).expect("serve");
     });
 
     let exchange = fresh_exchange();
-    let request = owner_signal_repository_ledger::Operation::Register(Registration {
-        repository_name: Name::new("owner-signal-repository-ledger"),
-        repository_class: Class::OwnerSignalContract,
+    let request = meta_signal_repository_ledger::Operation::Register(Registration {
+        repository_name: Name::new("meta-signal-repository-ledger"),
+        repository_class: Class::MetaSignalContract,
     })
     .into_request();
-    let frame = owner_signal_repository_ledger::Frame::new(ExchangeFrameBody::Request {
-        exchange,
-        request,
-    });
-    OwnerFrameIo::write(&mut client, &frame).expect("write request");
-    let reply = OwnerFrameIo::read(&mut client).expect("read reply");
+    let frame =
+        meta_signal_repository_ledger::Frame::new(ExchangeFrameBody::Request { exchange, request });
+    MetaFrameIo::write(&mut client, &frame).expect("write request");
+    let reply = MetaFrameIo::read(&mut client).expect("read reply");
     match reply.into_body() {
         ExchangeFrameBody::Reply {
             exchange: reply_exchange,
@@ -402,10 +400,10 @@ fn owner_signal_socket_registers_repository() {
         } => {
             assert_eq!(reply_exchange, exchange);
             match per_operation.into_head() {
-                SubReply::Ok(owner_signal_repository_ledger::Reply::Registered(registered)) => {
+                SubReply::Ok(meta_signal_repository_ledger::Reply::Registered(registered)) => {
                     assert_eq!(
                         registered.repository_name.as_str(),
-                        "owner-signal-repository-ledger"
+                        "meta-signal-repository-ledger"
                     )
                 }
                 other => panic!("unexpected reply {other:?}"),

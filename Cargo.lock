@@ -225,6 +225,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
+name = "meta-signal-repository-ledger"
+version = "0.1.0"
+source = "git+https://github.com/LiGoldragon/meta-signal-repository-ledger?branch=main#fe2467dbf66ff19ab8bc174adebe1fcff810cb12"
+dependencies = [
+ "nota-codec",
+ "rkyv",
+ "signal-frame",
+ "signal-repository-ledger",
+]
+
+[[package]]
 name = "munge"
 version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -257,7 +268,7 @@ dependencies = [
 [[package]]
 name = "nota-config"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/nota-config.git?branch=main#77a9f2e404d3f9bf00da456372e0ec360aa5d029"
+source = "git+https://github.com/LiGoldragon/nota-config.git?branch=main#bd9173a7f4e92e4b201f663f70ae853e8c226c22"
 dependencies = [
  "nota-codec",
  "rkyv",
@@ -267,7 +278,7 @@ dependencies = [
 [[package]]
 name = "nota-derive"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/nota-derive.git?branch=main#cde0e8262f2f90afbdf26d9b1b3561376723d816"
+source = "git+https://github.com/LiGoldragon/nota-derive.git?branch=main#11347da1ff4425ff4e743c15a3e3ec322b54ea9a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -279,17 +290,6 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
-
-[[package]]
-name = "owner-signal-repository-ledger"
-version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/owner-signal-repository-ledger?branch=main#f5382bdb6850b4ff456a15a474d8b19f72d8d2ee"
-dependencies = [
- "nota-codec",
- "rkyv",
- "signal-frame",
- "signal-repository-ledger",
-]
 
 [[package]]
 name = "paste"
@@ -389,9 +389,9 @@ name = "repository-ledger"
 version = "0.1.0"
 dependencies = [
  "futures-executor",
+ "meta-signal-repository-ledger",
  "nota-codec",
  "nota-config",
- "owner-signal-repository-ledger",
  "rkyv",
  "sema",
  "sema-engine",
@@ -463,7 +463,7 @@ dependencies = [
 [[package]]
 name = "schema-rust"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-frame.git?branch=main#d61ebf25997c47c997c0dce1d576f870e3e8383c"
+source = "git+https://github.com/LiGoldragon/signal-frame.git?branch=main#6f5a77f11115c043b93d005086cda8cbec349cd4"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -575,7 +575,7 @@ dependencies = [
 [[package]]
 name = "signal-frame"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-frame.git?branch=main#d61ebf25997c47c997c0dce1d576f870e3e8383c"
+source = "git+https://github.com/LiGoldragon/signal-frame.git?branch=main#6f5a77f11115c043b93d005086cda8cbec349cd4"
 dependencies = [
  "nota-codec",
  "paste",
@@ -587,7 +587,7 @@ dependencies = [
 [[package]]
 name = "signal-frame-macros"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-frame.git?branch=main#d61ebf25997c47c997c0dce1d576f870e3e8383c"
+source = "git+https://github.com/LiGoldragon/signal-frame.git?branch=main#6f5a77f11115c043b93d005086cda8cbec349cd4"
 dependencies = [
  "nota-codec",
  "proc-macro2",
@@ -600,7 +600,7 @@ dependencies = [
 [[package]]
 name = "signal-repository-ledger"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-repository-ledger?branch=main#cbd3a78be1ec302aeef03ce94d07ceb82022b357"
+source = "git+https://github.com/LiGoldragon/signal-repository-ledger?branch=main#fed520fe41ae7237de810c47de5b044491c577aa"
 dependencies = [
  "nota-codec",
  "nota-config",
