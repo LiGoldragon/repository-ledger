@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 pub mod client;
 pub mod daemon;
 pub mod daemon_command;
-pub mod frame_io;
 pub mod spool;
 
 pub use daemon_command::{RepositoryLedgerDaemonCommand, RepositoryLedgerDaemonConfigurationFile};
@@ -57,6 +56,9 @@ pub enum Error {
     #[error("signal frame error: {0}")]
     Frame(#[from] signal_frame::FrameError),
 
+    #[error("runtime frame error: {0}")]
+    RuntimeFrame(#[from] triad_runtime::FrameError),
+
     #[error("command line route error: {0}")]
     CommandLineRoute(#[from] signal_frame::CommandLineRouteError),
 
@@ -65,6 +67,12 @@ pub enum Error {
 
     #[error("argument: {0}")]
     Argument(#[from] triad_runtime::ArgumentError),
+
+    #[error("actor call failed: {detail}")]
+    ActorCall { detail: String },
+
+    #[error("daemon runtime failed: {detail}")]
+    DaemonRuntime { detail: String },
 
     #[error("configuration archive decode failed")]
     ConfigurationArchiveDecode,
@@ -92,9 +100,6 @@ pub enum Error {
 
     #[error("unexpected signal frame for this socket")]
     UnexpectedFrame,
-
-    #[error("connection closed before a complete frame arrived")]
-    ConnectionClosed,
 
     #[error("signal handshake was rejected")]
     HandshakeRejected,
@@ -881,21 +886,32 @@ fn single_command_from_operation_plan<Command>(plan: OperationPlan<Command>) -> 
 impl signal_frame::BatchErrorClassification for Error {
     fn batch_failure_reason(&self) -> BatchFailureReason {
         match self {
-            Self::Io(_) | Self::ConnectionClosed => BatchFailureReason::EngineUnavailable,
+            Self::Io(_)
+            | Self::RuntimeFrame(_)
+            | Self::ActorCall { .. }
+            | Self::DaemonRuntime { .. } => BatchFailureReason::EngineUnavailable,
             _ => BatchFailureReason::EngineRejected,
         }
     }
 
     fn retry_classification(&self) -> RetryClassification {
         match self {
-            Self::Io(_) | Self::ConnectionClosed | Self::Engine(_) => RetryClassification::Unknown,
+            Self::Io(_)
+            | Self::RuntimeFrame(_)
+            | Self::ActorCall { .. }
+            | Self::DaemonRuntime { .. }
+            | Self::Engine(_) => RetryClassification::Unknown,
             _ => RetryClassification::NotRetryable,
         }
     }
 
     fn commit_status(&self) -> CommitStatus {
         match self {
-            Self::Engine(_) | Self::Io(_) | Self::ConnectionClosed => CommitStatus::Unknown,
+            Self::Engine(_)
+            | Self::Io(_)
+            | Self::RuntimeFrame(_)
+            | Self::ActorCall { .. }
+            | Self::DaemonRuntime { .. } => CommitStatus::Unknown,
             _ => CommitStatus::NotCommitted,
         }
     }

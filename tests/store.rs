@@ -7,16 +7,13 @@ use std::time::{Duration, Instant};
 use meta_signal_repository_ledger::Operation as MetaOperation;
 use nota_next::NotaEncode;
 use repository_ledger::client::{CliRequest, CommandLineDispatch};
-use repository_ledger::daemon::Daemon;
-use repository_ledger::frame_io::{MetaFrameIo, OrdinaryFrameIo};
 use repository_ledger::spool::SpoolDirectory;
 use repository_ledger::{
     RepositoryLedgerDaemonCommand, RepositoryLedgerDaemonConfigurationFile, Store,
 };
 use signal_frame::{
     AcceptedOutcome, CommandLineSocket, ExchangeFrameBody, ExchangeIdentifier, ExchangeLane,
-    HandshakeReply, HandshakeRequest, LaneSequence, Reply as FrameReply, RequestBuilder,
-    RequestPayload, SessionEpoch, SubReply,
+    LaneSequence, Reply as FrameReply, RequestBuilder, RequestPayload, SessionEpoch, SubReply,
 };
 use signal_repository_ledger::{
     Catalog, ChangedFiles, Class, CommitMessage, CommitMessages, CommitObservation,
@@ -25,6 +22,7 @@ use signal_repository_ledger::{
     QueryResult, ReceiveHookNotification, RecentRepositories, RefName, RefUpdate, Registration,
     Reply as LedgerReply, SocketMode, TextSearch, Timestamp,
 };
+use triad_runtime::{FrameBody, LengthPrefixedCodec};
 
 fn notification(repository_name: &str, new_object_identifier: &str) -> ReceiveHookNotification {
     ReceiveHookNotification {
@@ -327,7 +325,7 @@ fn ordinary_signal_executor_rejects_multi_operation_batches_before_commit() {
 }
 
 #[test]
-fn ordinary_signal_socket_answers_catalog_query() {
+fn store_answers_ordinary_catalog_query() {
     let directory = tempfile::tempdir().expect("temp dir");
     let store = Store::open(directory.path().join("repository-ledger.sema")).expect("store opens");
     store
@@ -337,84 +335,40 @@ fn ordinary_signal_socket_answers_catalog_query() {
         })
         .expect("register");
 
-    let (mut client, mut server) = UnixStream::pair().expect("pair");
-    let handle = thread::spawn(move || {
-        Daemon::serve_ordinary_stream(&store, &mut server).expect("serve");
-    });
-
-    let handshake = signal_repository_ledger::Frame::new(ExchangeFrameBody::HandshakeRequest(
-        HandshakeRequest::current(),
-    ));
-    OrdinaryFrameIo::write(&mut client, &handshake).expect("write handshake");
-    let handshake_reply = OrdinaryFrameIo::read(&mut client).expect("handshake reply");
-    assert!(matches!(
-        handshake_reply.into_body(),
-        ExchangeFrameBody::HandshakeReply(HandshakeReply::Accepted(_))
-    ));
-
-    let exchange = fresh_exchange();
     let request = LedgerOperation::Query(Query::Catalog(Catalog)).into_request();
-    let frame =
-        signal_repository_ledger::Frame::new(ExchangeFrameBody::Request { exchange, request });
-    OrdinaryFrameIo::write(&mut client, &frame).expect("write request");
-    let reply = OrdinaryFrameIo::read(&mut client).expect("read reply");
-    match reply.into_body() {
-        ExchangeFrameBody::Reply {
-            exchange: reply_exchange,
-            reply: FrameReply::Accepted { per_operation, .. },
-        } => {
-            assert_eq!(reply_exchange, exchange);
-            match per_operation.into_head() {
-                SubReply::Ok(LedgerReply::QueryResult(QueryResult::Catalog(listing))) => {
-                    assert_eq!(listing.repositories.len(), 1)
-                }
-                other => panic!("unexpected reply {other:?}"),
+    match store.handle_ordinary_request(request) {
+        FrameReply::Accepted { per_operation, .. } => match per_operation.into_head() {
+            SubReply::Ok(LedgerReply::QueryResult(QueryResult::Catalog(listing))) => {
+                assert_eq!(listing.repositories.len(), 1)
             }
-        }
-        other => panic!("unexpected frame {other:?}"),
+            other => panic!("unexpected reply {other:?}"),
+        },
+        other => panic!("unexpected reply {other:?}"),
     }
-    handle.join().expect("server thread");
 }
 
 #[test]
-fn meta_signal_socket_registers_repository() {
+fn store_answers_meta_repository_registration() {
     let directory = tempfile::tempdir().expect("temp dir");
     let store = Store::open(directory.path().join("repository-ledger.sema")).expect("store opens");
 
-    let (mut client, mut server) = UnixStream::pair().expect("pair");
-    let handle = thread::spawn(move || {
-        Daemon::serve_meta_stream(&store, &mut server).expect("serve");
-    });
-
-    let exchange = fresh_exchange();
     let request = meta_signal_repository_ledger::Operation::Register(Registration {
         repository_name: Name::new("meta-signal-repository-ledger"),
         repository_class: Class::MetaSignalContract,
     })
     .into_request();
-    let frame =
-        meta_signal_repository_ledger::Frame::new(ExchangeFrameBody::Request { exchange, request });
-    MetaFrameIo::write(&mut client, &frame).expect("write request");
-    let reply = MetaFrameIo::read(&mut client).expect("read reply");
-    match reply.into_body() {
-        ExchangeFrameBody::Reply {
-            exchange: reply_exchange,
-            reply: FrameReply::Accepted { per_operation, .. },
-        } => {
-            assert_eq!(reply_exchange, exchange);
-            match per_operation.into_head() {
-                SubReply::Ok(meta_signal_repository_ledger::Reply::Registered(registered)) => {
-                    assert_eq!(
-                        registered.repository_name.as_str(),
-                        "meta-signal-repository-ledger"
-                    )
-                }
-                other => panic!("unexpected reply {other:?}"),
+    match store.handle_meta_request(request) {
+        FrameReply::Accepted { per_operation, .. } => match per_operation.into_head() {
+            SubReply::Ok(meta_signal_repository_ledger::Reply::Registered(registered)) => {
+                assert_eq!(
+                    registered.repository_name.as_str(),
+                    "meta-signal-repository-ledger"
+                )
             }
-        }
-        other => panic!("unexpected frame {other:?}"),
+            other => panic!("unexpected reply {other:?}"),
+        },
+        other => panic!("unexpected reply {other:?}"),
     }
-    handle.join().expect("server thread");
 }
 
 #[test]
@@ -474,8 +428,8 @@ fn daemon_process_starts_from_binary_configuration_and_answers_catalog_query() {
     let request = LedgerOperation::Query(Query::Catalog(Catalog)).into_request();
     let frame =
         signal_repository_ledger::Frame::new(ExchangeFrameBody::Request { exchange, request });
-    OrdinaryFrameIo::write(&mut client, &frame).expect("write request");
-    let reply = OrdinaryFrameIo::read(&mut client).expect("read reply");
+    write_ordinary_frame(&mut client, &frame);
+    let reply = read_ordinary_frame(&mut client);
     match reply.into_body() {
         ExchangeFrameBody::Reply {
             exchange: reply_exchange,
@@ -493,6 +447,68 @@ fn daemon_process_starts_from_binary_configuration_and_answers_catalog_query() {
     }
 
     stop_child(&mut child);
+}
+
+#[test]
+fn daemon_process_starts_from_binary_configuration_and_answers_meta_registration() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let configuration_path = directory.path().join("repository-ledger-daemon.rkyv");
+    let configuration = daemon_configuration(directory.path());
+    RepositoryLedgerDaemonConfigurationFile::new(&configuration_path)
+        .write_configuration(&configuration)
+        .expect("write daemon configuration");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_repository-ledger-daemon"))
+        .arg(&configuration_path)
+        .spawn()
+        .expect("repository-ledger-daemon starts");
+
+    let meta_socket = directory.path().join("meta-repository-ledger.sock");
+    wait_for_socket(&meta_socket);
+
+    let mut client = UnixStream::connect(&meta_socket).expect("client connects");
+    let exchange = fresh_exchange();
+    let request = meta_signal_repository_ledger::Operation::Register(Registration {
+        repository_name: Name::new("repository-ledger"),
+        repository_class: Class::RuntimeComponent,
+    })
+    .into_request();
+    let frame =
+        meta_signal_repository_ledger::Frame::new(ExchangeFrameBody::Request { exchange, request });
+    write_meta_frame(&mut client, &frame);
+    let reply = read_meta_frame(&mut client);
+    match reply.into_body() {
+        ExchangeFrameBody::Reply {
+            exchange: reply_exchange,
+            reply: FrameReply::Accepted { per_operation, .. },
+        } => {
+            assert_eq!(reply_exchange, exchange);
+            match per_operation.into_head() {
+                SubReply::Ok(meta_signal_repository_ledger::Reply::Registered(registered)) => {
+                    assert_eq!(registered.repository_name.as_str(), "repository-ledger")
+                }
+                other => panic!("unexpected reply {other:?}"),
+            }
+        }
+        other => panic!("unexpected frame {other:?}"),
+    }
+
+    stop_child(&mut child);
+}
+
+#[test]
+fn daemon_source_does_not_reintroduce_blocking_listener_shape() {
+    let source = std::fs::read_to_string("src/daemon.rs").expect("daemon source");
+    assert!(source.contains("ActorMultiListenerDaemon"));
+    assert!(source.contains("RepositoryLedgerStoreActor"));
+    assert!(source.contains("SpoolIngestActor"));
+    assert!(!source.contains("std::os::unix::net::UnixListener"));
+    assert!(!source.contains("thread::spawn"));
+    assert!(!source.contains("thread::sleep"));
+    assert!(!source.contains("Arc<Mutex"));
+    assert!(!source.contains("serve_ordinary_stream"));
+    assert!(!source.contains("serve_meta_stream"));
+    assert!(!Path::new("src/frame_io.rs").exists());
 }
 
 fn fresh_exchange() -> ExchangeIdentifier {
@@ -543,4 +559,36 @@ fn wait_for_socket(socket: &Path) {
 fn stop_child(child: &mut Child) {
     let _ = child.kill();
     let _ = child.wait();
+}
+
+fn write_ordinary_frame(stream: &mut UnixStream, frame: &signal_repository_ledger::Frame) {
+    LengthPrefixedCodec::default()
+        .write_body(
+            stream,
+            &FrameBody::new(frame.encode().expect("encode frame")),
+        )
+        .expect("write frame");
+}
+
+fn read_ordinary_frame(stream: &mut UnixStream) -> signal_repository_ledger::Frame {
+    let body = LengthPrefixedCodec::default()
+        .read_body(stream)
+        .expect("read frame");
+    signal_repository_ledger::Frame::decode(body.bytes()).expect("decode frame")
+}
+
+fn write_meta_frame(stream: &mut UnixStream, frame: &meta_signal_repository_ledger::Frame) {
+    LengthPrefixedCodec::default()
+        .write_body(
+            stream,
+            &FrameBody::new(frame.encode().expect("encode frame")),
+        )
+        .expect("write frame");
+}
+
+fn read_meta_frame(stream: &mut UnixStream) -> meta_signal_repository_ledger::Frame {
+    let body = LengthPrefixedCodec::default()
+        .read_body(stream)
+        .expect("read frame");
+    meta_signal_repository_ledger::Frame::decode(body.bytes()).expect("decode frame")
 }

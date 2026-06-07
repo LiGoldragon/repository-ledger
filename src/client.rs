@@ -11,8 +11,8 @@ use signal_frame::{
 };
 use signal_repository_ledger::{Reply as LedgerReply, Request as LedgerRequest};
 
-use crate::frame_io::{MetaFrameIo, OrdinaryFrameIo};
 use crate::{Error, Result};
+use triad_runtime::{FrameBody, LengthPrefixedCodec};
 
 const DEFAULT_ORDINARY_SOCKET_PATH: &str = "/run/repository-ledger/repository-ledger.sock";
 const DEFAULT_META_SOCKET_PATH: &str = "/run/repository-ledger/repository-ledger-meta.sock";
@@ -69,10 +69,10 @@ impl Client {
         );
         let frame =
             signal_repository_ledger::Frame::new(ExchangeFrameBody::Request { exchange, request });
-        OrdinaryFrameIo::write(&mut stream, &frame)?;
+        self.write_working_frame(&mut stream, &frame)?;
         stream.flush()?;
 
-        let reply = OrdinaryFrameIo::read(&mut stream)?;
+        let reply = self.read_working_frame(&mut stream)?;
         match reply.into_body() {
             ExchangeFrameBody::Reply {
                 exchange: reply_exchange,
@@ -94,10 +94,10 @@ impl Client {
             exchange,
             request,
         });
-        MetaFrameIo::write(&mut stream, &frame)?;
+        self.write_meta_frame(&mut stream, &frame)?;
         stream.flush()?;
 
-        let reply = MetaFrameIo::read(&mut stream)?;
+        let reply = self.read_meta_frame(&mut stream)?;
         match reply.into_body() {
             ExchangeFrameBody::Reply {
                 exchange: reply_exchange,
@@ -126,8 +126,8 @@ impl Client {
         let frame = signal_repository_ledger::Frame::new(ExchangeFrameBody::HandshakeRequest(
             HandshakeRequest::current(),
         ));
-        OrdinaryFrameIo::write(stream, &frame)?;
-        let reply = OrdinaryFrameIo::read(stream)?;
+        self.write_working_frame(stream, &frame)?;
+        let reply = self.read_working_frame(stream)?;
         match reply.into_body() {
             ExchangeFrameBody::HandshakeReply(HandshakeReply::Accepted(_)) => Ok(()),
             ExchangeFrameBody::HandshakeReply(HandshakeReply::Rejected(_)) => {
@@ -141,8 +141,8 @@ impl Client {
         let frame = meta_signal_repository_ledger::Frame::new(ExchangeFrameBody::HandshakeRequest(
             HandshakeRequest::current(),
         ));
-        MetaFrameIo::write(stream, &frame)?;
-        let reply = MetaFrameIo::read(stream)?;
+        self.write_meta_frame(stream, &frame)?;
+        let reply = self.read_meta_frame(stream)?;
         match reply.into_body() {
             ExchangeFrameBody::HandshakeReply(HandshakeReply::Accepted(_)) => Ok(()),
             ExchangeFrameBody::HandshakeReply(HandshakeReply::Rejected(_)) => {
@@ -174,6 +174,40 @@ impl Client {
             }
             FrameReply::Rejected { .. } => Err(Error::SignalRequestRejected),
         }
+    }
+
+    fn read_working_frame(
+        &self,
+        stream: &mut UnixStream,
+    ) -> Result<signal_repository_ledger::Frame> {
+        let body = LengthPrefixedCodec::default().read_body(stream)?;
+        Ok(signal_repository_ledger::Frame::decode(body.bytes())?)
+    }
+
+    fn write_working_frame(
+        &self,
+        stream: &mut UnixStream,
+        frame: &signal_repository_ledger::Frame,
+    ) -> Result<()> {
+        LengthPrefixedCodec::default().write_body(stream, &FrameBody::new(frame.encode()?))?;
+        Ok(())
+    }
+
+    fn read_meta_frame(
+        &self,
+        stream: &mut UnixStream,
+    ) -> Result<meta_signal_repository_ledger::Frame> {
+        let body = LengthPrefixedCodec::default().read_body(stream)?;
+        Ok(meta_signal_repository_ledger::Frame::decode(body.bytes())?)
+    }
+
+    fn write_meta_frame(
+        &self,
+        stream: &mut UnixStream,
+        frame: &meta_signal_repository_ledger::Frame,
+    ) -> Result<()> {
+        LengthPrefixedCodec::default().write_body(stream, &FrameBody::new(frame.encode()?))?;
+        Ok(())
     }
 }
 

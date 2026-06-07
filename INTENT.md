@@ -40,6 +40,10 @@ stays in `primary/INTENT.md`.
   traffic and meta traffic have separate listener actors; meta-signal
   configuration (registration, spool policy, mirror policy) arrives only
   through `meta-signal-repository-ledger`.
+- **Store and spool are actor-owned concerns.** Daemon listeners ask a
+  `RepositoryLedgerStoreActor`; fallback spool ingestion is triggered by
+  a `SpoolIngestActor`. The old blocking listener loop, ad-hoc
+  thread-spawned sockets, and repo-local frame IO module are retired.
 - **One typed startup configuration.** The daemon starts from one typed
   signal-encoded rkyv `DaemonConfiguration` file on its single
   argument. Inline NOTA and `.nota` configuration files are authoring

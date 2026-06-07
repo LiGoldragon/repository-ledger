@@ -21,6 +21,7 @@ path = "src/bin/repository-ledger.rs"
 
 [dependencies]
 futures-executor               = "0.3"
+kameo                          = { version = "0.20.0", default-features = false, features = ["macros", "tracing"] }
 meta-signal-repository-ledger = { git = "https://github.com/LiGoldragon/meta-signal-repository-ledger", branch = "main" }
 nota-next                     = { git = "https://github.com/LiGoldragon/nota-next.git", branch = "main" }
 rkyv                           = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
@@ -30,6 +31,7 @@ signal-executor                = { git = "https://github.com/LiGoldragon/signal-
 signal-frame                   = { git = "https://github.com/LiGoldragon/signal-frame.git", branch = "main" }
 signal-sema                    = { git = "https://github.com/LiGoldragon/signal-sema.git", branch = "main" }
 thiserror                      = "2"
+tokio                          = { version = "1.47", features = ["io-util", "net", "rt-multi-thread", "time"] }
 triad-runtime                  = { git = "https://github.com/LiGoldragon/triad-runtime.git", branch = "main" }
 
 [dev-dependencies]

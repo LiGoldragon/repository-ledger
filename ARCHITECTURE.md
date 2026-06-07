@@ -51,6 +51,12 @@ flowchart LR
 
 - The CLI talks only to `repository-ledger-daemon`.
 - The daemon has separate listener actors for ordinary and meta contracts.
+- Store access is actor-owned: socket handlers and spool ingestion ask
+  `RepositoryLedgerStoreActor` instead of sharing `Store` behind
+  `Arc<Mutex<_>>`.
+- Fallback spool ingestion is a separate concern, represented by
+  `SpoolIngestActor` plus an async ticker. It is not an inline
+  `thread::sleep` loop in the daemon.
 - Meta-signal configuration arrives only through `meta-signal-repository-ledger`.
 - The daemon startup configuration is one typed
   signal-encoded rkyv `DaemonConfiguration` file from
@@ -74,6 +80,11 @@ This repository now proves the first live triad boundary:
 
 - Contract crates compile with `signal_channel!`.
 - The runtime crate can open a sema-engine database.
+- `repository-ledger-daemon` binds ordinary and meta sockets through
+  `triad_runtime::ActorMultiListenerDaemon`, one listener actor per authority
+  tier.
+- The old blocking `UnixListener` daemon, repo-local `frame_io` module, and
+  static `serve_*_stream` entrypoints are retired.
 - Hook notifications can be stored as typed repository events.
 - Direct push observations can store commit messages and changed files.
 - The server-side Gitolite repositories exist and can receive pushes.
@@ -83,6 +94,32 @@ This repository now proves the first live triad boundary:
   changed files, and commit messages.
 - The spool reader parses the fallback CriomOS hook projection and moves files
   to `processed/` after commit.
+
+## Actor Runtime Shape
+
+```mermaid
+flowchart LR
+    ordinary["ordinary listener actor"]
+    meta["meta listener actor"]
+    runtime["RepositoryLedgerRuntime"]
+    store["RepositoryLedgerStoreActor"]
+    spool["SpoolIngestActor"]
+    ticker["async spool ticker"]
+    sema["repository-ledger.sema"]
+
+    ordinary --> runtime
+    meta --> runtime
+    runtime --> store
+    ticker --> spool
+    spool --> store
+    store --> sema
+```
+
+`RepositoryLedgerRuntime` owns socket-frame decode / encode and Signal handshake
+handling. It does not own repository state. Ordinary and meta request bodies are
+sent to `RepositoryLedgerStoreActor` as typed Kameo messages. `SpoolIngestActor`
+sends an explicit directory ingest message to the store actor on startup and on
+the ticker interval.
 
 ## Pseudo-NOTA Entry And Query Shape
 

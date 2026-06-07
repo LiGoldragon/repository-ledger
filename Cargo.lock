@@ -475,6 +475,7 @@ name = "repository-ledger"
 version = "0.1.0"
 dependencies = [
  "futures-executor",
+ "kameo",
  "meta-signal-repository-ledger",
  "nota-next",
  "rkyv",
@@ -485,6 +486,7 @@ dependencies = [
  "signal-sema",
  "tempfile",
  "thiserror",
+ "tokio",
  "triad-runtime",
 ]
 
