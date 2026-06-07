@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use nota_codec::{Decoder, NotaDecode};
+use nota_next::{Block, Delimiter, NotaBlock, NotaDecode, NotaDecodeError, NotaSource};
 use signal_repository_ledger::{
     GitoliteUser, Name, ObjectIdentifier, ReceiveHookNotification, RefName, RefUpdate, Timestamp,
 };
@@ -87,15 +87,22 @@ impl SpoolNotificationFile {
     }
 
     fn decode(&self) -> Result<ReceiveHookNotification> {
-        let mut decoder = Decoder::new(&self.text);
-        decoder.expect_record_head("ReceiveHookNotification")?;
-        let repository_name = Name::new(Self::decode_named_string(&mut decoder, "Name")?);
+        let root = NotaSource::new(&self.text).parse_root()?;
+        let fields = Self::expect_record_body(&root, "ReceiveHookNotification")?;
+        if fields.len() != 5 {
+            return Err(NotaDecodeError::ExpectedRootCount {
+                type_name: "ReceiveHookNotification",
+                expected: 5,
+                found: fields.len(),
+            }
+            .into());
+        }
+        let repository_name = Name::new(Self::decode_named_string(&fields[0], "Name")?);
         let gitolite_user =
-            GitoliteUser::new(Self::decode_named_string(&mut decoder, "GitoliteUser")?);
-        let received_at = Self::decode_received_at(&mut decoder)?;
-        let daemon_socket_present = Self::decode_daemon_socket_present(&mut decoder)?;
-        let ref_updates = Self::decode_ref_updates(&mut decoder)?;
-        decoder.expect_record_end()?;
+            GitoliteUser::new(Self::decode_named_string(&fields[1], "GitoliteUser")?);
+        let received_at = Self::decode_received_at(&fields[2])?;
+        let daemon_socket_present = Self::decode_daemon_socket_present(&fields[3])?;
+        let ref_updates = Self::decode_ref_updates(&fields[4])?;
         Ok(ReceiveHookNotification {
             repository_name,
             gitolite_user,
@@ -105,44 +112,77 @@ impl SpoolNotificationFile {
         })
     }
 
-    fn decode_received_at(decoder: &mut Decoder<'_>) -> nota_codec::Result<Timestamp> {
-        let value = Self::decode_named_string(decoder, "ReceivedAt")?;
+    fn expect_record_body<'block>(
+        block: &'block Block,
+        head: &'static str,
+    ) -> std::result::Result<&'block [Block], NotaDecodeError> {
+        let children = NotaBlock::new(block).expect_delimited(Delimiter::Parenthesis, head)?;
+        let actual = children
+            .first()
+            .and_then(|block| block.demote_to_string())
+            .ok_or(NotaDecodeError::ExpectedAtom { type_name: head })?;
+        if actual != head {
+            return Err(NotaDecodeError::UnknownVariant {
+                enum_name: head,
+                variant: actual.to_owned(),
+            });
+        }
+        Ok(&children[1..])
+    }
+
+    fn decode_received_at(block: &Block) -> std::result::Result<Timestamp, NotaDecodeError> {
+        let value = Self::decode_named_string(block, "ReceivedAt")?;
         Ok(Timestamp::new(value))
     }
 
     fn decode_named_string(
-        decoder: &mut Decoder<'_>,
+        block: &Block,
         head: &'static str,
-    ) -> nota_codec::Result<String> {
-        decoder.expect_record_head(head)?;
-        let value = String::decode(decoder)?;
-        decoder.expect_record_end()?;
-        Ok(value)
+    ) -> std::result::Result<String, NotaDecodeError> {
+        let fields = Self::expect_record_body(block, head)?;
+        if fields.len() != 1 {
+            return Err(NotaDecodeError::ExpectedRootCount {
+                type_name: head,
+                expected: 1,
+                found: fields.len(),
+            });
+        }
+        String::from_nota_block(&fields[0])
     }
 
-    fn decode_daemon_socket_present(decoder: &mut Decoder<'_>) -> nota_codec::Result<bool> {
-        decoder.expect_record_head("DaemonSocketPresent")?;
-        let value = bool::decode(decoder)?;
-        decoder.expect_record_end()?;
-        Ok(value)
+    fn decode_daemon_socket_present(block: &Block) -> std::result::Result<bool, NotaDecodeError> {
+        let fields = Self::expect_record_body(block, "DaemonSocketPresent")?;
+        if fields.len() != 1 {
+            return Err(NotaDecodeError::ExpectedRootCount {
+                type_name: "DaemonSocketPresent",
+                expected: 1,
+                found: fields.len(),
+            });
+        }
+        bool::from_nota_block(&fields[0])
     }
 
-    fn decode_ref_updates(decoder: &mut Decoder<'_>) -> nota_codec::Result<Vec<RefUpdate>> {
-        decoder.expect_record_head("RefUpdates")?;
+    fn decode_ref_updates(block: &Block) -> std::result::Result<Vec<RefUpdate>, NotaDecodeError> {
+        let update_blocks = Self::expect_record_body(block, "RefUpdates")?;
         let mut updates = Vec::new();
-        while !decoder.peek_is_record_end()? {
-            decoder.expect_record_head("RefUpdate")?;
-            let old_object_identifier = String::decode(decoder)?;
-            let new_object_identifier = String::decode(decoder)?;
-            let ref_name = String::decode(decoder)?;
-            decoder.expect_record_end()?;
+        for update_block in update_blocks {
+            let fields = Self::expect_record_body(update_block, "RefUpdate")?;
+            if fields.len() != 3 {
+                return Err(NotaDecodeError::ExpectedRootCount {
+                    type_name: "RefUpdate",
+                    expected: 3,
+                    found: fields.len(),
+                });
+            }
+            let old_object_identifier = String::from_nota_block(&fields[0])?;
+            let new_object_identifier = String::from_nota_block(&fields[1])?;
+            let ref_name = String::from_nota_block(&fields[2])?;
             updates.push(RefUpdate {
                 old_object_identifier: ObjectIdentifier::new(old_object_identifier),
                 new_object_identifier: ObjectIdentifier::new(new_object_identifier),
                 ref_name: RefName::new(ref_name),
             });
         }
-        decoder.expect_record_end()?;
         Ok(updates)
     }
 }

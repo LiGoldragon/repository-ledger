@@ -4,7 +4,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
 use meta_signal_repository_ledger::{ChannelRequest as MetaRequest, Reply as MetaReply};
-use nota_codec::{Decoder, Encoder, NotaDecode, NotaEncode, Token};
+use nota_next::{Delimiter, NotaBlock, NotaEncode, NotaSource};
 use signal_frame::{
     CommandLineSocket, ExchangeFrameBody, ExchangeIdentifier, ExchangeLane, HandshakeReply,
     HandshakeRequest, LaneSequence, Reply as FrameReply, SessionEpoch, SubReply,
@@ -22,7 +22,7 @@ const META_SOCKET_ENVIRONMENT_VARIABLE: &str = "REPOSITORY_LEDGER_META_SOCKET_PA
 signal_frame::signal_cli! {
     pub struct CommandLineDispatch {
         working signal_repository_ledger::Operation;
-        owner meta_signal_repository_ledger::Operation;
+        meta meta_signal_repository_ledger::Operation;
     }
 }
 
@@ -200,7 +200,7 @@ impl CliRequest {
         if text.starts_with("--") {
             return Err(Error::FlagArgument(text.to_owned()));
         }
-        let source = if text.starts_with('(') {
+        let source = if text.starts_with('(') || text.starts_with('[') {
             text.to_owned()
         } else {
             std::fs::read_to_string(PathBuf::from(argument))?
@@ -211,21 +211,17 @@ impl CliRequest {
     pub fn from_nota(text: &str) -> Result<Self> {
         match RequestHead::from_text(text)?.route()? {
             CommandLineSocket::Working => Self::decode_working(text),
-            CommandLineSocket::Owner => Self::decode_meta(text),
+            CommandLineSocket::Meta => Self::decode_meta(text),
         }
     }
 
     fn decode_working(text: &str) -> Result<Self> {
-        let mut decoder = Decoder::new(text);
-        let payload = LedgerRequest::decode(&mut decoder)?;
-        RequestEnd::new(&mut decoder).expect()?;
+        let payload = NotaSource::new(text).parse::<LedgerRequest>()?;
         Ok(Self::Working(payload))
     }
 
     fn decode_meta(text: &str) -> Result<Self> {
-        let mut decoder = Decoder::new(text);
-        let payload = MetaRequest::decode(&mut decoder)?;
-        RequestEnd::new(&mut decoder).expect()?;
+        let payload = NotaSource::new(text).parse::<MetaRequest>()?;
         Ok(Self::Meta(payload))
     }
 }
@@ -237,11 +233,20 @@ pub struct RequestHead {
 
 impl RequestHead {
     pub fn from_text(text: &str) -> Result<Self> {
-        let mut decoder = Decoder::new(text);
-        if matches!(decoder.peek_token()?, Some(Token::LBracket)) {
-            decoder.expect_seq_start()?;
-        }
-        let head = decoder.peek_record_head()?;
+        let root = NotaSource::new(text).parse_root()?;
+        let first_payload = root
+            .as_delimited(Delimiter::SquareBracket)
+            .and_then(|payloads| payloads.first())
+            .unwrap_or(&root);
+        let children = NotaBlock::new(first_payload)
+            .expect_delimited(Delimiter::Parenthesis, "request payload")?;
+        let head = children
+            .first()
+            .and_then(|block| block.demote_to_string())
+            .ok_or(nota_next::NotaDecodeError::ExpectedAtom {
+                type_name: "request head",
+            })?
+            .to_owned();
         Ok(Self { head })
     }
 
@@ -252,25 +257,6 @@ impl RequestHead {
     }
 }
 
-struct RequestEnd<'decoder, 'text> {
-    decoder: &'decoder mut Decoder<'text>,
-}
-
-impl<'decoder, 'text> RequestEnd<'decoder, 'text> {
-    fn new(decoder: &'decoder mut Decoder<'text>) -> Self {
-        Self { decoder }
-    }
-
-    fn expect(self) -> Result<()> {
-        if self.decoder.peek_token()?.is_some() {
-            return Err(Error::UnexpectedFrame);
-        }
-        Ok(())
-    }
-}
-
 fn encode_reply(reply: &impl NotaEncode) -> Result<String> {
-    let mut encoder = Encoder::new();
-    reply.encode(&mut encoder)?;
-    Ok(encoder.into_string())
+    Ok(reply.to_nota())
 }

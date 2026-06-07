@@ -5,7 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use meta_signal_repository_ledger::Operation as MetaOperation;
-use nota_codec::NotaEncode;
+use nota_next::NotaEncode;
 use repository_ledger::client::{CliRequest, CommandLineDispatch};
 use repository_ledger::daemon::Daemon;
 use repository_ledger::frame_io::{MetaFrameIo, OrdinaryFrameIo};
@@ -72,9 +72,7 @@ fn changed_file(status: &str, path: &str) -> FileChange {
 }
 
 fn encode_to_text(value: &impl NotaEncode) -> String {
-    let mut encoder = nota_codec::Encoder::new();
-    value.encode(&mut encoder).expect("encode");
-    encoder.into_string()
+    value.to_nota()
 }
 
 #[test]
@@ -87,7 +85,7 @@ fn command_line_dispatch_routes_working_and_meta_heads() {
     );
     assert_eq!(
         dispatch.route_head("Register").expect("meta head"),
-        CommandLineSocket::Owner
+        CommandLineSocket::Meta
     );
 }
 

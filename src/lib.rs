@@ -18,11 +18,11 @@ use meta_signal_repository_ledger::{
     MirrorPolicy, MirrorPolicySet, Operation as MetaOperation, Registered, Reply as MetaReply,
     Retired, Retirement, SpoolDirectoryPolicy, SpoolDirectoryPolicySet,
 };
+use nota_next::NotaDecodeError;
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
-use sema::SchemaVersion;
 use sema_engine::{
     Assertion, Engine, EngineOpen, EngineRecord, Mutation, QueryPlan, RecordKey, Retraction,
-    TableDescriptor, TableName, TableReference,
+    SchemaVersion, TableDescriptor, TableName, TableReference,
 };
 use signal_executor::{
     BatchEffects, BatchPlan, CommandEffect, CommandExecutor, Executor, Lowering, ObserverSet,
@@ -61,7 +61,7 @@ pub enum Error {
     CommandLineRoute(#[from] signal_frame::CommandLineRouteError),
 
     #[error("NOTA decode error: {0}")]
-    Nota(#[from] nota_codec::Error),
+    Nota(#[from] NotaDecodeError),
 
     #[error("argument: {0}")]
     Argument(#[from] triad_runtime::ArgumentError),
