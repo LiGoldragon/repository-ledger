@@ -41,7 +41,9 @@ stays in `primary/INTENT.md`.
   configuration (registration, spool policy, mirror policy) arrives only
   through `meta-signal-repository-ledger`.
 - **One typed startup configuration.** The daemon starts from one typed
-  `DaemonConfiguration` record on its single argument.
+  signal-encoded rkyv `DaemonConfiguration` file on its single
+  argument. Inline NOTA and `.nota` configuration files are authoring
+  / CLI surfaces and are rejected by the daemon entrypoint.
 - **Inter-component traffic is Signal; NOTA renders only at edges.**
   NOTA appears at the CLI / spool / debug edges; inter-component traffic
   is Signal frames.

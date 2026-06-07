@@ -4,12 +4,15 @@
 //! meta-signal sockets over it.
 
 use std::future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub mod client;
 pub mod daemon;
+pub mod daemon_command;
 pub mod frame_io;
 pub mod spool;
+
+pub use daemon_command::{RepositoryLedgerDaemonCommand, RepositoryLedgerDaemonConfigurationFile};
 
 use meta_signal_repository_ledger::{
     MirrorPolicy, MirrorPolicySet, Operation as MetaOperation, Registered, Reply as MetaReply,
@@ -60,8 +63,26 @@ pub enum Error {
     #[error("NOTA decode error: {0}")]
     Nota(#[from] nota_codec::Error),
 
-    #[error("configuration decode error: {0}")]
-    Configuration(#[from] nota_config::Error),
+    #[error("argument: {0}")]
+    Argument(#[from] triad_runtime::ArgumentError),
+
+    #[error("configuration archive decode failed")]
+    ConfigurationArchiveDecode,
+
+    #[error("configuration archive encode failed")]
+    ConfigurationArchiveEncode,
+
+    #[error("configuration read failed at {path}: {source}")]
+    ConfigurationRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
+    #[error("configuration write failed at {path}: {source}")]
+    ConfigurationWrite {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 
     #[error("expected exactly one argument")]
     ExpectedSingleArgument,
@@ -452,7 +473,6 @@ impl Store {
         let mut events: Vec<Event> = snapshot
             .records()
             .iter()
-            .cloned()
             .filter(|event| {
                 if let Some(repository_name) = &query.repository_name {
                     event.notification.repository_name == *repository_name
@@ -467,6 +487,7 @@ impl Store {
                     true
                 }
             })
+            .cloned()
             .map(StoredEvent::into_contract)
             .collect();
         events.sort_by_key(|event| event.sequence);
@@ -481,10 +502,10 @@ impl Store {
         let snapshot = self.engine.match_records(QueryPlan::all(self.events))?;
         let mut repositories: Vec<RecentRepository> = Vec::new();
         for event in snapshot.records() {
-            if let Some(since) = &query.since_received_at {
-                if event.notification.received_at.as_str() < since.as_str() {
-                    continue;
-                }
+            if let Some(since) = &query.since_received_at
+                && event.notification.received_at.as_str() < since.as_str()
+            {
+                continue;
             }
             let Some(existing) = repositories
                 .iter_mut()
@@ -535,10 +556,10 @@ impl Store {
                 continue;
             }
             for file in &commit.commit.changed_files {
-                if let Some(search) = &query.path_contains {
-                    if !contains_case_insensitive(file.path.as_str(), search.as_str()) {
-                        continue;
-                    }
+                if let Some(search) = &query.path_contains
+                    && !contains_case_insensitive(file.path.as_str(), search.as_str())
+                {
+                    continue;
                 }
                 files.push(ChangedFile {
                     repository_name: commit.repository_name.clone(),
@@ -639,20 +660,20 @@ impl Store {
         since_received_at: Option<&Timestamp>,
         until_received_at: Option<&Timestamp>,
     ) -> bool {
-        if let Some(repository_name) = repository_name {
-            if commit.repository_name != *repository_name {
-                return false;
-            }
+        if let Some(repository_name) = repository_name
+            && commit.repository_name != *repository_name
+        {
+            return false;
         }
-        if let Some(since) = since_received_at {
-            if commit.received_at.as_str() < since.as_str() {
-                return false;
-            }
+        if let Some(since) = since_received_at
+            && commit.received_at.as_str() < since.as_str()
+        {
+            return false;
         }
-        if let Some(until) = until_received_at {
-            if commit.received_at.as_str() > until.as_str() {
-                return false;
-            }
+        if let Some(until) = until_received_at
+            && commit.received_at.as_str() > until.as_str()
+        {
+            return false;
         }
         true
     }

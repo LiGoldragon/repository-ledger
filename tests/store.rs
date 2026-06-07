@@ -1,24 +1,29 @@
 use std::os::unix::net::UnixStream;
+use std::path::Path;
+use std::process::{Child, Command};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use meta_signal_repository_ledger::Operation as MetaOperation;
 use nota_codec::NotaEncode;
-use repository_ledger::Store;
 use repository_ledger::client::{CliRequest, CommandLineDispatch};
 use repository_ledger::daemon::Daemon;
 use repository_ledger::frame_io::{MetaFrameIo, OrdinaryFrameIo};
 use repository_ledger::spool::SpoolDirectory;
+use repository_ledger::{
+    RepositoryLedgerDaemonCommand, RepositoryLedgerDaemonConfigurationFile, Store,
+};
 use signal_frame::{
     AcceptedOutcome, CommandLineSocket, ExchangeFrameBody, ExchangeIdentifier, ExchangeLane,
     HandshakeReply, HandshakeRequest, LaneSequence, Reply as FrameReply, RequestBuilder,
     RequestPayload, SessionEpoch, SubReply,
 };
 use signal_repository_ledger::{
-    Catalog, ChangedFiles, Class, CommitMessage, CommitMessages, CommitObservation, Events,
-    FileChange, FilePath, FileStatus, GitoliteUser, Name, ObjectIdentifier,
-    Operation as LedgerOperation, PushObservation, Query, QueryLimit, QueryResult,
-    ReceiveHookNotification, RecentRepositories, RefName, RefUpdate, Registration,
-    Reply as LedgerReply, TextSearch, Timestamp,
+    Catalog, ChangedFiles, Class, CommitMessage, CommitMessages, CommitObservation,
+    DaemonConfiguration, Events, FileChange, FilePath, FileStatus, FilesystemPath, GitoliteUser,
+    Name, ObjectIdentifier, Operation as LedgerOperation, PushObservation, Query, QueryLimit,
+    QueryResult, ReceiveHookNotification, RecentRepositories, RefName, RefUpdate, Registration,
+    Reply as LedgerReply, SocketMode, TextSearch, Timestamp,
 };
 
 fn notification(repository_name: &str, new_object_identifier: &str) -> ReceiveHookNotification {
@@ -104,7 +109,7 @@ fn command_line_request_decodes_meta_contract_by_head() {
 #[test]
 fn hook_notifications_are_committed_as_typed_events() {
     let directory = tempfile::tempdir().expect("temp dir");
-    let store = Store::open(directory.path().join("repository-ledger.redb")).expect("store opens");
+    let store = Store::open(directory.path().join("repository-ledger.sema")).expect("store opens");
 
     let first = store
         .record_hook_notification(notification(
@@ -139,7 +144,7 @@ fn hook_notifications_are_committed_as_typed_events() {
 #[test]
 fn repository_catalog_is_typed_and_sorted() {
     let directory = tempfile::tempdir().expect("temp dir");
-    let store = Store::open(directory.path().join("repository-ledger.redb")).expect("store opens");
+    let store = Store::open(directory.path().join("repository-ledger.sema")).expect("store opens");
 
     store
         .register_repository(Registration {
@@ -165,7 +170,7 @@ fn repository_catalog_is_typed_and_sorted() {
 #[test]
 fn push_observations_support_recent_repository_file_and_message_queries() {
     let directory = tempfile::tempdir().expect("temp dir");
-    let store = Store::open(directory.path().join("repository-ledger.redb")).expect("store opens");
+    let store = Store::open(directory.path().join("repository-ledger.sema")).expect("store opens");
 
     store
         .record_push_observation(push_observation(
@@ -236,7 +241,7 @@ fn push_observations_support_recent_repository_file_and_message_queries() {
 #[test]
 fn spool_files_are_ingested_and_moved_to_processed() {
     let directory = tempfile::tempdir().expect("temp dir");
-    let store = Store::open(directory.path().join("repository-ledger.redb")).expect("store opens");
+    let store = Store::open(directory.path().join("repository-ledger.sema")).expect("store opens");
     let spool = directory.path().join("spool");
     std::fs::create_dir_all(&spool).expect("spool dir");
     let file = spool.join("20260519T120000Z-repository-ledger-1.nota");
@@ -286,7 +291,7 @@ fn spool_files_are_ingested_and_moved_to_processed() {
 #[test]
 fn ordinary_signal_executor_rejects_multi_operation_batches_before_commit() {
     let directory = tempfile::tempdir().expect("temp dir");
-    let store = Store::open(directory.path().join("repository-ledger.redb")).expect("store opens");
+    let store = Store::open(directory.path().join("repository-ledger.sema")).expect("store opens");
 
     let request = RequestBuilder::new()
         .with(LedgerOperation::Receive(notification(
@@ -326,7 +331,7 @@ fn ordinary_signal_executor_rejects_multi_operation_batches_before_commit() {
 #[test]
 fn ordinary_signal_socket_answers_catalog_query() {
     let directory = tempfile::tempdir().expect("temp dir");
-    let store = Store::open(directory.path().join("repository-ledger.redb")).expect("store opens");
+    let store = Store::open(directory.path().join("repository-ledger.sema")).expect("store opens");
     store
         .register_repository(Registration {
             repository_name: Name::new("repository-ledger"),
@@ -376,7 +381,7 @@ fn ordinary_signal_socket_answers_catalog_query() {
 #[test]
 fn meta_signal_socket_registers_repository() {
     let directory = tempfile::tempdir().expect("temp dir");
-    let store = Store::open(directory.path().join("repository-ledger.redb")).expect("store opens");
+    let store = Store::open(directory.path().join("repository-ledger.sema")).expect("store opens");
 
     let (mut client, mut server) = UnixStream::pair().expect("pair");
     let handle = thread::spawn(move || {
@@ -414,10 +419,130 @@ fn meta_signal_socket_registers_repository() {
     handle.join().expect("server thread");
 }
 
+#[test]
+fn daemon_configuration_accepts_binary_file_argument() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let configuration_path = directory.path().join("repository-ledger-daemon.rkyv");
+    let configuration = daemon_configuration(directory.path());
+
+    RepositoryLedgerDaemonConfigurationFile::new(&configuration_path)
+        .write_configuration(&configuration)
+        .expect("write daemon configuration");
+
+    let decoded =
+        RepositoryLedgerDaemonCommand::from_arguments([configuration_path.display().to_string()])
+            .configuration()
+            .expect("read daemon configuration");
+
+    assert_eq!(decoded, configuration);
+}
+
+#[test]
+fn daemon_configuration_rejects_nota_arguments() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let nota_path = directory.path().join("repository-ledger-daemon.nota");
+    std::fs::write(&nota_path, "(DaemonConfiguration)").expect("write nota fixture");
+
+    let inline = RepositoryLedgerDaemonCommand::from_arguments(["(DaemonConfiguration)"])
+        .configuration()
+        .expect_err("inline NOTA is rejected");
+    let file = RepositoryLedgerDaemonCommand::from_arguments([nota_path.display().to_string()])
+        .configuration()
+        .expect_err(".nota file is rejected");
+
+    assert!(matches!(inline, repository_ledger::Error::Argument(_)));
+    assert!(matches!(file, repository_ledger::Error::Argument(_)));
+}
+
+#[test]
+fn daemon_process_starts_from_binary_configuration_and_answers_catalog_query() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let configuration_path = directory.path().join("repository-ledger-daemon.rkyv");
+    let configuration = daemon_configuration(directory.path());
+    RepositoryLedgerDaemonConfigurationFile::new(&configuration_path)
+        .write_configuration(&configuration)
+        .expect("write daemon configuration");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_repository-ledger-daemon"))
+        .arg(&configuration_path)
+        .spawn()
+        .expect("repository-ledger-daemon starts");
+
+    let ordinary_socket = directory.path().join("repository-ledger.sock");
+    wait_for_socket(&ordinary_socket);
+
+    let mut client = UnixStream::connect(&ordinary_socket).expect("client connects");
+    let exchange = fresh_exchange();
+    let request = LedgerOperation::Query(Query::Catalog(Catalog)).into_request();
+    let frame =
+        signal_repository_ledger::Frame::new(ExchangeFrameBody::Request { exchange, request });
+    OrdinaryFrameIo::write(&mut client, &frame).expect("write request");
+    let reply = OrdinaryFrameIo::read(&mut client).expect("read reply");
+    match reply.into_body() {
+        ExchangeFrameBody::Reply {
+            exchange: reply_exchange,
+            reply: FrameReply::Accepted { per_operation, .. },
+        } => {
+            assert_eq!(reply_exchange, exchange);
+            match per_operation.into_head() {
+                SubReply::Ok(LedgerReply::QueryResult(QueryResult::Catalog(listing))) => {
+                    assert_eq!(listing.repositories.len(), 0)
+                }
+                other => panic!("unexpected reply {other:?}"),
+            }
+        }
+        other => panic!("unexpected frame {other:?}"),
+    }
+
+    stop_child(&mut child);
+}
+
 fn fresh_exchange() -> ExchangeIdentifier {
     ExchangeIdentifier::new(
         SessionEpoch::new(1),
         ExchangeLane::Connector,
         LaneSequence::first(),
     )
+}
+
+fn daemon_configuration(directory: &Path) -> DaemonConfiguration {
+    DaemonConfiguration {
+        ordinary_socket_path: FilesystemPath::new(
+            directory
+                .join("repository-ledger.sock")
+                .display()
+                .to_string(),
+        ),
+        ordinary_socket_mode: SocketMode::new(0o600),
+        meta_socket_path: FilesystemPath::new(
+            directory
+                .join("meta-repository-ledger.sock")
+                .display()
+                .to_string(),
+        ),
+        meta_socket_mode: SocketMode::new(0o600),
+        store_path: FilesystemPath::new(
+            directory
+                .join("repository-ledger.sema")
+                .display()
+                .to_string(),
+        ),
+        spool_directory: FilesystemPath::new(directory.join("spool").display().to_string()),
+    }
+}
+
+fn wait_for_socket(socket: &Path) {
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(5) {
+        if socket.exists() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("socket was not created: {}", socket.display());
+}
+
+fn stop_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }

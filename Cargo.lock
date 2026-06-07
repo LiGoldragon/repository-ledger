@@ -391,7 +391,6 @@ dependencies = [
  "futures-executor",
  "meta-signal-repository-ledger",
  "nota-codec",
- "nota-config",
  "rkyv",
  "sema",
  "sema-engine",
@@ -401,6 +400,7 @@ dependencies = [
  "signal-sema",
  "tempfile",
  "thiserror",
+ "triad-runtime",
 ]
 
 [[package]]
@@ -688,6 +688,16 @@ name = "tinyvec_macros"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
+
+[[package]]
+name = "triad-runtime"
+version = "0.2.1"
+source = "git+https://github.com/LiGoldragon/triad-runtime.git?branch=main#cdda1b1f95283f36d488fa2435281e6201fe7fdb"
+dependencies = [
+ "rustix",
+ "signal-frame",
+ "thiserror",
+]
 
 [[package]]
 name = "unicode-ident"

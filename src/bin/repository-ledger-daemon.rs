@@ -9,6 +9,5 @@ fn main() {
 }
 
 fn run() -> repository_ledger::Result<()> {
-    let configuration = nota_config::ConfigurationSource::from_argv()?.decode()?;
-    repository_ledger::daemon::Daemon::new(configuration).run()
+    repository_ledger::RepositoryLedgerDaemonCommand::from_environment().run()
 }

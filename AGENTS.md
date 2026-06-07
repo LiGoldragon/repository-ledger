@@ -9,5 +9,6 @@ This repository is a triad runtime crate:
 - `signal-repository-ledger` is the ordinary peer contract.
 - `meta-signal-repository-ledger` is the meta-signal authority contract.
 
-Durable state must go through `sema-engine`; do not open a parallel redb handle
-or add ad-hoc JSON state.
+Durable state must go through `sema-engine`; expose the store as
+`repository-ledger.sema`, do not open a parallel redb handle or add ad-hoc JSON
+state.

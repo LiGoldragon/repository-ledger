@@ -18,7 +18,7 @@ flowchart LR
     daemon["repository-ledger-daemon<br/>long-lived triad daemon"]
     ordinary["signal-repository-ledger<br/>ordinary socket"]
     meta["meta-signal-repository-ledger<br/>meta socket"]
-    store["repository-ledger.redb<br/>sema-engine"]
+    store["repository-ledger.sema<br/>sema-engine"]
     gitolite["Gitolite post-receive hook<br/>repository-ledger CLI first"]
     spool["fallback spool files"]
 
@@ -53,7 +53,9 @@ flowchart LR
 - The daemon has separate listener actors for ordinary and meta contracts.
 - Meta-signal configuration arrives only through `meta-signal-repository-ledger`.
 - The daemon startup configuration is one typed
-  `DaemonConfiguration` record from `signal-repository-ledger`.
+  signal-encoded rkyv `DaemonConfiguration` file from
+  `signal-repository-ledger`; the daemon rejects inline NOTA and
+  `.nota` files.
 - Every stored record is a typed Rust record; no line-oriented log is source of
   truth.
 - NOTA appears at CLI/spool/debug edges. Inter-component traffic is Signal.
