@@ -36,8 +36,8 @@ stays in `primary/INTENT.md`.
   only when CLI submission fails.
 - **Every stored record is a typed Rust record.** No line-oriented log
   is the source of truth.
-- **Two authority tiers, two listener actors.** Ordinary contract
-  traffic and meta traffic have separate listener actors; meta-signal
+- **Two authority tiers, two listener tasks.** Ordinary contract
+  traffic and meta traffic have separate listener tasks; meta-signal
   configuration (registration, spool policy, mirror policy) arrives only
   through `meta-signal-repository-ledger`.
 - **Store and spool are actor-owned concerns.** Daemon listeners ask a

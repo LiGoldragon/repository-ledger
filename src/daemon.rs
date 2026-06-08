@@ -11,7 +11,7 @@ use signal_frame::{
 };
 use signal_repository_ledger::DaemonConfiguration;
 use triad_runtime::{
-    AcceptedConnection, ActorListenerSocket, ActorMultiConnectionRuntime, ActorMultiListenerDaemon,
+    AcceptedConnection, AsyncListenerSocket, AsyncMultiConnectionRuntime, AsyncMultiListenerDaemon,
     FrameBody, LengthPrefixedCodec, MaximumFrameLength, RequestConcurrencyLimit, RequestErrorLog,
     SocketMode,
 };
@@ -88,7 +88,7 @@ impl Daemon {
             .map_err(|error| Error::DaemonRuntime {
                 detail: error.to_string(),
             })?
-            .block_on(self.run_actor_native())
+            .block_on(self.run_async_task_backed())
     }
 
     pub fn ingest_spool(&self) -> Result<SpoolIngestSummary> {
@@ -96,7 +96,7 @@ impl Daemon {
         SpoolDirectory::new(self.configuration.spool_directory.as_str()).ingest_into(&store)
     }
 
-    async fn run_actor_native(self) -> Result<()> {
+    async fn run_async_task_backed(self) -> Result<()> {
         let store =
             RepositoryLedgerStoreActor::start(Store::open(self.configuration.store_path.as_str())?)
                 .await;
@@ -110,14 +110,14 @@ impl Daemon {
 
         let runtime = RepositoryLedgerRuntime::new(store);
         let listener_sockets = [
-            ActorListenerSocket::new(
+            AsyncListenerSocket::new(
                 ListenerTier::Ordinary,
                 self.configuration.ordinary_socket_path.as_str(),
             )
             .with_socket_mode(SocketMode::new(
                 self.configuration.ordinary_socket_mode.into_u32(),
             )),
-            ActorListenerSocket::new(
+            AsyncListenerSocket::new(
                 ListenerTier::Meta,
                 self.configuration.meta_socket_path.as_str(),
             )
@@ -125,7 +125,7 @@ impl Daemon {
                 self.configuration.meta_socket_mode.into_u32(),
             )),
         ];
-        ActorMultiListenerDaemon::new(
+        AsyncMultiListenerDaemon::new(
             listener_sockets,
             runtime,
             RequestErrorLog::new("repository-ledger-daemon"),
@@ -276,7 +276,7 @@ impl RepositoryLedgerRuntime {
     }
 }
 
-impl ActorMultiConnectionRuntime for RepositoryLedgerRuntime {
+impl AsyncMultiConnectionRuntime for RepositoryLedgerRuntime {
     type Listener = ListenerTier;
     type Error = Error;
 

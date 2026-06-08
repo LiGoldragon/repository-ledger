@@ -499,7 +499,7 @@ fn daemon_process_starts_from_binary_configuration_and_answers_meta_registration
 #[test]
 fn daemon_source_does_not_reintroduce_blocking_listener_shape() {
     let source = std::fs::read_to_string("src/daemon.rs").expect("daemon source");
-    assert!(source.contains("ActorMultiListenerDaemon"));
+    assert!(source.contains("AsyncMultiListenerDaemon"));
     assert!(source.contains("RepositoryLedgerStoreActor"));
     assert!(source.contains("SpoolIngestActor"));
     assert!(!source.contains("std::os::unix::net::UnixListener"));

@@ -50,7 +50,7 @@ flowchart LR
 ## Constraints
 
 - The CLI talks only to `repository-ledger-daemon`.
-- The daemon has separate listener actors for ordinary and meta contracts.
+- The daemon has separate listener tasks for ordinary and meta contracts.
 - Store access is actor-owned: socket handlers and spool ingestion ask
   `RepositoryLedgerStoreActor` instead of sharing `Store` behind
   `Arc<Mutex<_>>`.
@@ -81,7 +81,7 @@ This repository now proves the first live triad boundary:
 - Contract crates compile with `signal_channel!`.
 - The runtime crate can open a sema-engine database.
 - `repository-ledger-daemon` binds ordinary and meta sockets through
-  `triad_runtime::ActorMultiListenerDaemon`, one listener actor per authority
+  `triad_runtime::AsyncMultiListenerDaemon`, one listener task per authority
   tier.
 - The old blocking `UnixListener` daemon, repo-local `frame_io` module, and
   static `serve_*_stream` entrypoints are retired.
@@ -99,8 +99,8 @@ This repository now proves the first live triad boundary:
 
 ```mermaid
 flowchart LR
-    ordinary["ordinary listener actor"]
-    meta["meta listener actor"]
+    ordinary["ordinary listener task"]
+    meta["meta listener task"]
     runtime["RepositoryLedgerRuntime"]
     store["RepositoryLedgerStoreActor"]
     spool["SpoolIngestActor"]
