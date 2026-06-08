@@ -285,7 +285,7 @@ fn spool_files_are_ingested_and_moved_to_processed() {
 }
 
 #[test]
-fn ordinary_signal_executor_rejects_multi_operation_batches_before_commit() {
+fn ordinary_nexus_runner_rejects_multi_operation_batches_before_commit() {
     let directory = tempfile::tempdir().expect("temp dir");
     let store = Store::open(directory.path().join("repository-ledger.sema")).expect("store opens");
 
@@ -311,7 +311,7 @@ fn ordinary_signal_executor_rejects_multi_operation_batches_before_commit() {
             assert_eq!(commit, signal_frame::CommitStatus::NotCommitted);
             assert_eq!(retry, signal_frame::RetryClassification::NotRetryable);
         }
-        other => panic!("expected executor batch abort, got {other:?}"),
+        other => panic!("expected Nexus runner batch abort, got {other:?}"),
     }
 
     let listing = store

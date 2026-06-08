@@ -79,6 +79,10 @@ flowchart LR
 This repository now proves the first live triad boundary:
 
 - Contract crates compile with `signal_channel!`.
+- Request execution no longer uses `signal-executor`. The store actor
+  drives a typed `triad-runtime::Runner` path with local Nexus work /
+  action nouns and SEMA read/write nouns, then projects the result back
+  to the current ordinary or meta Signal reply type.
 - The runtime crate can open a sema-engine database.
 - `repository-ledger-daemon` binds ordinary and meta sockets through
   `triad_runtime::AsyncMultiListenerDaemon`, one listener task per authority
@@ -94,6 +98,11 @@ This repository now proves the first live triad boundary:
   changed files, and commit messages.
 - The spool reader parses the fallback CriomOS hook projection and moves files
   to `processed/` after commit.
+
+The contract axis is not complete in this slice: `signal-repository-ledger`
+and `meta-signal-repository-ledger` still publish hand-written
+`signal_channel!` contracts. The daemon-side execution axis is migrated; the
+wire-contract schema-next migration is a separate follow-up.
 
 ## Actor Runtime Shape
 

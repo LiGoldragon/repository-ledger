@@ -23,20 +23,22 @@ use sema_engine::{
     Assertion, Engine, EngineOpen, EngineRecord, Mutation, QueryPlan, RecordKey, Retraction,
     SchemaVersion, TableDescriptor, TableName, TableReference,
 };
-use signal_executor::{
-    BatchEffects, BatchPlan, CommandEffect, CommandExecutor, Executor, Lowering, ObserverSet,
-    OperationEffects, OperationPlan,
+use signal_frame::{
+    BatchErrorClassification, BatchFailureReason, CommitStatus, NonEmpty, Reply as FrameReply,
+    RetryClassification, SubReply,
 };
-use signal_frame::{BatchFailureReason, CommitStatus, NonEmpty, RetryClassification};
 use signal_repository_ledger::{
     Catalog, CatalogListing, ChangedFile, ChangedFileListing, ChangedFiles, Commit, CommitListing,
     CommitMessages, CommitObservation, Event, EventListing, EventRecorded, EventSequence, Events,
     Name, Operation as LedgerOperation, PushObservation, Query, QueryLimit, QueryResult,
     ReceiveHookNotification, RecentRepositories, RecentRepositoriesListing, RecentRepository,
     Registration, Reply as LedgerReply, ReplyEnvelope as LedgerChannelReply,
-    Request as LedgerChannelRequest, Timestamp,
+    Request as LedgerChannelRequest, RequestUnimplemented as LedgerRequestUnimplemented, Timestamp,
+    UnimplementedReason as LedgerUnimplementedReason,
 };
-use signal_sema::{SemaOperation, SemaOutcome, ToSemaOperation, ToSemaOutcome};
+use triad_runtime::{
+    ContinuationExhausted, NextStep, NexusAction as TriadNexusAction, Runner, RunnerEngines,
+};
 
 const SCHEMA_VERSION: u32 = 1;
 const REPOSITORY_EVENTS: TableName = TableName::new("repository_events");
@@ -111,14 +113,12 @@ pub enum Error {
     SignalRequestFailed,
 
     #[error(
-        "signal executor accepted only one repository-ledger operation per atomic batch, received {operation_count}"
+        "repository-ledger Nexus runner accepts one operation per atomic batch, received {operation_count}"
     )]
     UnsupportedAtomicBatch { operation_count: usize },
 
-    #[error(
-        "signal executor accepted only one command per operation plan, received {command_count}"
-    )]
-    UnsupportedAtomicOperationPlan { command_count: usize },
+    #[error("Nexus replied to the wrong signal tier")]
+    NexusReplyTierMismatch,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -211,20 +211,9 @@ impl EngineRecord for StoredMirrorPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LedgerCommand {
+enum LedgerSemaWriteInput {
     RecordHookNotification(ReceiveHookNotification),
     RecordPushObservation(PushObservation),
-    ReadQuery(Query),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LedgerEffect {
-    EventRecorded(EventRecorded),
-    QueryResult(QueryResult),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MetaCommand {
     RegisterRepository(Registration),
     RetireRepository(Retirement),
     SetSpoolDirectoryPolicy(SpoolDirectoryPolicy),
@@ -232,107 +221,248 @@ pub enum MetaCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MetaEffect {
+enum LedgerSemaReadInput {
+    ReadQuery(Query),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LedgerSemaWriteOutput {
+    EventRecorded(EventRecorded),
     Registered(Registered),
     Retired(Retired),
     SpoolDirectoryPolicySet(SpoolDirectoryPolicySet),
     MirrorPolicySet(MirrorPolicySet),
+    WriteRejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LedgerSemaReadOutput {
+    QueryResult(QueryResult),
+    ReadMiss,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RepositoryLedgerSignalInput {
+    Ordinary(LedgerOperation),
+    Meta(MetaOperation),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RepositoryLedgerSignalOutput {
+    Ordinary(LedgerReply),
+    Meta(MetaReply),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RepositoryLedgerNexusWork {
+    SignalArrived(RepositoryLedgerSignalInput),
+    SemaWriteCompleted(LedgerSemaWriteOutput),
+    SemaReadCompleted(LedgerSemaReadOutput),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RepositoryLedgerNexusAction {
+    CommandSemaWrite(LedgerSemaWriteInput),
+    CommandSemaRead(LedgerSemaReadInput),
+    ReplyToSignal(RepositoryLedgerSignalOutput),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LedgerLowering;
+enum RepositoryLedgerSignalTier {
+    Ordinary,
+    Meta,
+}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MetaLowering;
-
-struct LedgerCommandExecutor<'store> {
+struct RepositoryLedgerNexusEngines<'store> {
     store: &'store Store,
+    signal_tier: Option<RepositoryLedgerSignalTier>,
+    ordinary_failure_reply: Option<LedgerReply>,
+    meta_failure_reply: Option<MetaReply>,
+    last_error: Option<Error>,
 }
 
-struct MetaCommandExecutor<'store> {
-    store: &'store Store,
-}
+impl triad_runtime::SemaWriteInput for LedgerSemaWriteInput {}
 
-impl LedgerCommand {
-    fn from_operation(operation: LedgerOperation) -> Self {
-        match operation {
-            LedgerOperation::Receive(notification) => Self::RecordHookNotification(notification),
-            LedgerOperation::Observe(observation) => Self::RecordPushObservation(observation),
-            LedgerOperation::Query(query) => Self::ReadQuery(query),
-        }
-    }
-}
+impl triad_runtime::SemaWriteOutput for LedgerSemaWriteOutput {}
 
-impl LedgerEffect {
-    fn into_reply(self) -> LedgerReply {
+impl triad_runtime::SemaReadInput for LedgerSemaReadInput {}
+
+impl triad_runtime::SemaReadOutput for LedgerSemaReadOutput {}
+
+impl triad_runtime::NexusWork for RepositoryLedgerNexusWork {}
+
+impl TriadNexusAction for RepositoryLedgerNexusAction {
+    type Reply = RepositoryLedgerSignalOutput;
+    type SemaWrite = LedgerSemaWriteInput;
+    type SemaRead = LedgerSemaReadInput;
+    type Effect = std::convert::Infallible;
+    type Work = RepositoryLedgerNexusWork;
+
+    fn into_next_step(self) -> triad_runtime::NexusActionNextStep<Self> {
         match self {
-            Self::EventRecorded(recorded) => LedgerReply::EventRecorded(recorded),
-            Self::QueryResult(result) => LedgerReply::QueryResult(result),
+            Self::CommandSemaWrite(input) => NextStep::SemaWrite(input),
+            Self::CommandSemaRead(input) => NextStep::SemaRead(input),
+            Self::ReplyToSignal(output) => NextStep::Reply(output),
         }
     }
 }
 
-impl MetaCommand {
-    fn from_operation(operation: MetaOperation) -> Self {
-        match operation {
-            MetaOperation::Register(registration) => Self::RegisterRepository(registration),
-            MetaOperation::Retire(retirement) => Self::RetireRepository(retirement),
-            MetaOperation::SetSpoolDirectory(policy) => Self::SetSpoolDirectoryPolicy(policy),
-            MetaOperation::SetMirror(policy) => Self::SetMirrorPolicy(policy),
+impl RepositoryLedgerNexusEngines<'_> {
+    fn new(store: &Store) -> RepositoryLedgerNexusEngines<'_> {
+        RepositoryLedgerNexusEngines {
+            store,
+            signal_tier: None,
+            ordinary_failure_reply: None,
+            meta_failure_reply: None,
+            last_error: None,
         }
     }
-}
 
-impl MetaEffect {
-    fn into_reply(self) -> MetaReply {
-        match self {
-            Self::Registered(registered) => MetaReply::Registered(registered),
-            Self::Retired(retired) => MetaReply::Retired(retired),
-            Self::SpoolDirectoryPolicySet(policy) => MetaReply::SpoolDirectoryPolicySet(policy),
-            Self::MirrorPolicySet(policy) => MetaReply::MirrorPolicySet(policy),
-        }
+    fn take_last_error(&mut self) -> Option<Error> {
+        self.last_error.take()
     }
-}
 
-impl ToSemaOperation for LedgerCommand {
-    fn to_sema_operation(&self) -> SemaOperation {
-        match self {
-            Self::RecordHookNotification(_) | Self::RecordPushObservation(_) => {
-                SemaOperation::Assert
+    fn action_for_signal_input(
+        &mut self,
+        input: RepositoryLedgerSignalInput,
+    ) -> RepositoryLedgerNexusAction {
+        match input {
+            RepositoryLedgerSignalInput::Ordinary(operation) => {
+                self.signal_tier = Some(RepositoryLedgerSignalTier::Ordinary);
+                self.ordinary_failure_reply = Some(Self::ordinary_unimplemented_reply(&operation));
+                match operation {
+                    LedgerOperation::Receive(notification) => {
+                        RepositoryLedgerNexusAction::CommandSemaWrite(
+                            LedgerSemaWriteInput::RecordHookNotification(notification),
+                        )
+                    }
+                    LedgerOperation::Observe(observation) => {
+                        RepositoryLedgerNexusAction::CommandSemaWrite(
+                            LedgerSemaWriteInput::RecordPushObservation(observation),
+                        )
+                    }
+                    LedgerOperation::Query(query) => RepositoryLedgerNexusAction::CommandSemaRead(
+                        LedgerSemaReadInput::ReadQuery(query),
+                    ),
+                }
             }
-            Self::ReadQuery(_) => SemaOperation::Match,
-        }
-    }
-}
-
-impl ToSemaOutcome for LedgerEffect {
-    fn to_sema_outcome(&self) -> SemaOutcome {
-        match self {
-            Self::EventRecorded(_) => SemaOutcome::Asserted,
-            Self::QueryResult(_) => SemaOutcome::Matched,
-        }
-    }
-}
-
-impl ToSemaOperation for MetaCommand {
-    fn to_sema_operation(&self) -> SemaOperation {
-        match self {
-            Self::RegisterRepository(_)
-            | Self::SetSpoolDirectoryPolicy(_)
-            | Self::SetMirrorPolicy(_) => SemaOperation::Mutate,
-            Self::RetireRepository(_) => SemaOperation::Retract,
-        }
-    }
-}
-
-impl ToSemaOutcome for MetaEffect {
-    fn to_sema_outcome(&self) -> SemaOutcome {
-        match self {
-            Self::Registered(_) | Self::SpoolDirectoryPolicySet(_) | Self::MirrorPolicySet(_) => {
-                SemaOutcome::Mutated
+            RepositoryLedgerSignalInput::Meta(operation) => {
+                self.signal_tier = Some(RepositoryLedgerSignalTier::Meta);
+                self.meta_failure_reply = Some(Self::meta_unimplemented_reply(&operation));
+                match operation {
+                    MetaOperation::Register(registration) => {
+                        RepositoryLedgerNexusAction::CommandSemaWrite(
+                            LedgerSemaWriteInput::RegisterRepository(registration),
+                        )
+                    }
+                    MetaOperation::Retire(retirement) => {
+                        RepositoryLedgerNexusAction::CommandSemaWrite(
+                            LedgerSemaWriteInput::RetireRepository(retirement),
+                        )
+                    }
+                    MetaOperation::SetSpoolDirectory(policy) => {
+                        RepositoryLedgerNexusAction::CommandSemaWrite(
+                            LedgerSemaWriteInput::SetSpoolDirectoryPolicy(policy),
+                        )
+                    }
+                    MetaOperation::SetMirror(policy) => {
+                        RepositoryLedgerNexusAction::CommandSemaWrite(
+                            LedgerSemaWriteInput::SetMirrorPolicy(policy),
+                        )
+                    }
+                }
             }
-            Self::Retired(_) => SemaOutcome::Retracted,
         }
+    }
+
+    fn action_for_sema_write_output(
+        &self,
+        output: LedgerSemaWriteOutput,
+    ) -> RepositoryLedgerNexusAction {
+        let signal_output = match output {
+            LedgerSemaWriteOutput::EventRecorded(recorded) => {
+                RepositoryLedgerSignalOutput::Ordinary(LedgerReply::EventRecorded(recorded))
+            }
+            LedgerSemaWriteOutput::Registered(registered) => {
+                RepositoryLedgerSignalOutput::Meta(MetaReply::Registered(registered))
+            }
+            LedgerSemaWriteOutput::Retired(retired) => {
+                RepositoryLedgerSignalOutput::Meta(MetaReply::Retired(retired))
+            }
+            LedgerSemaWriteOutput::SpoolDirectoryPolicySet(policy) => {
+                RepositoryLedgerSignalOutput::Meta(MetaReply::SpoolDirectoryPolicySet(policy))
+            }
+            LedgerSemaWriteOutput::MirrorPolicySet(policy) => {
+                RepositoryLedgerSignalOutput::Meta(MetaReply::MirrorPolicySet(policy))
+            }
+            LedgerSemaWriteOutput::WriteRejected => self.failure_signal_output(),
+        };
+        RepositoryLedgerNexusAction::ReplyToSignal(signal_output)
+    }
+
+    fn action_for_sema_read_output(
+        &self,
+        output: LedgerSemaReadOutput,
+    ) -> RepositoryLedgerNexusAction {
+        let signal_output = match output {
+            LedgerSemaReadOutput::QueryResult(result) => {
+                RepositoryLedgerSignalOutput::Ordinary(LedgerReply::QueryResult(result))
+            }
+            LedgerSemaReadOutput::ReadMiss => self.failure_signal_output(),
+        };
+        RepositoryLedgerNexusAction::ReplyToSignal(signal_output)
+    }
+
+    fn failure_signal_output(&self) -> RepositoryLedgerSignalOutput {
+        match self
+            .signal_tier
+            .unwrap_or(RepositoryLedgerSignalTier::Ordinary)
+        {
+            RepositoryLedgerSignalTier::Ordinary => RepositoryLedgerSignalOutput::Ordinary(
+                self.ordinary_failure_reply
+                    .clone()
+                    .unwrap_or_else(Self::ordinary_unknown_failure_reply),
+            ),
+            RepositoryLedgerSignalTier::Meta => RepositoryLedgerSignalOutput::Meta(
+                self.meta_failure_reply
+                    .clone()
+                    .unwrap_or_else(Self::meta_unknown_failure_reply),
+            ),
+        }
+    }
+
+    fn ordinary_unimplemented_reply(operation: &LedgerOperation) -> LedgerReply {
+        let query = match operation {
+            LedgerOperation::Query(query) => Some(query.kind()),
+            LedgerOperation::Receive(_) | LedgerOperation::Observe(_) => None,
+        };
+        LedgerReply::RequestUnimplemented(LedgerRequestUnimplemented {
+            operation: operation.operation_kind(),
+            query,
+            reason: LedgerUnimplementedReason::StoreUnavailable,
+        })
+    }
+
+    fn ordinary_unknown_failure_reply() -> LedgerReply {
+        LedgerReply::RequestUnimplemented(LedgerRequestUnimplemented {
+            operation: signal_repository_ledger::OperationKind::Receive,
+            query: None,
+            reason: LedgerUnimplementedReason::StoreUnavailable,
+        })
+    }
+
+    fn meta_unimplemented_reply(operation: &MetaOperation) -> MetaReply {
+        MetaReply::RequestUnimplemented(meta_signal_repository_ledger::RequestUnimplemented {
+            operation: operation.operation_kind(),
+            reason: meta_signal_repository_ledger::UnimplementedReason::StoreUnavailable,
+        })
+    }
+
+    fn meta_unknown_failure_reply() -> MetaReply {
+        MetaReply::RequestUnimplemented(meta_signal_repository_ledger::RequestUnimplemented {
+            operation: meta_signal_repository_ledger::OperationKind::Register,
+            reason: meta_signal_repository_ledger::UnimplementedReason::StoreUnavailable,
+        })
     }
 }
 
@@ -684,34 +814,114 @@ impl Store {
     }
 
     pub fn handle_ordinary_request(&self, request: LedgerChannelRequest) -> LedgerChannelReply {
-        let command_executor = LedgerCommandExecutor { store: self };
-        let observers = ObserverSet::no_op();
-        let mut executor = Executor::new(LedgerLowering, command_executor, observers);
-        futures_executor::block_on(executor.execute(request))
+        let operation_count = request.payloads().len();
+        if operation_count != 1 {
+            return self.batch_aborted_reply(
+                &Error::UnsupportedAtomicBatch { operation_count },
+                operation_count,
+            );
+        }
+        let operation = request.payloads.into_head();
+        let mut engines = RepositoryLedgerNexusEngines::new(self);
+        let output = futures_executor::block_on(Runner::default().drive(
+            &mut engines,
+            RepositoryLedgerNexusWork::SignalArrived(RepositoryLedgerSignalInput::Ordinary(
+                operation,
+            )),
+        ));
+        if let Some(error) = engines.take_last_error() {
+            return self.batch_aborted_reply(&error, operation_count);
+        }
+        match output {
+            RepositoryLedgerSignalOutput::Ordinary(reply) => {
+                FrameReply::committed(NonEmpty::single(SubReply::Ok(reply)))
+            }
+            RepositoryLedgerSignalOutput::Meta(_) => {
+                self.batch_aborted_reply(&Error::NexusReplyTierMismatch, operation_count)
+            }
+        }
     }
 
     pub fn handle_meta_request(
         &self,
         request: meta_signal_repository_ledger::ChannelRequest,
     ) -> meta_signal_repository_ledger::ChannelReply {
-        let command_executor = MetaCommandExecutor { store: self };
-        let observers = ObserverSet::no_op();
-        let mut executor = Executor::new(MetaLowering, command_executor, observers);
-        futures_executor::block_on(executor.execute(request))
-    }
-
-    fn execute_ledger_command(&self, command: LedgerCommand) -> Result<LedgerEffect> {
-        match command {
-            LedgerCommand::RecordHookNotification(notification) => self
-                .record_hook_notification(notification)
-                .map(LedgerEffect::EventRecorded),
-            LedgerCommand::RecordPushObservation(observation) => self
-                .record_push_observation(observation)
-                .map(LedgerEffect::EventRecorded),
-            LedgerCommand::ReadQuery(query) => {
-                self.execute_query(query).map(LedgerEffect::QueryResult)
+        let operation_count = request.payloads().len();
+        if operation_count != 1 {
+            return self.batch_aborted_reply(
+                &Error::UnsupportedAtomicBatch { operation_count },
+                operation_count,
+            );
+        }
+        let operation = request.payloads.into_head();
+        let mut engines = RepositoryLedgerNexusEngines::new(self);
+        let output = futures_executor::block_on(Runner::default().drive(
+            &mut engines,
+            RepositoryLedgerNexusWork::SignalArrived(RepositoryLedgerSignalInput::Meta(operation)),
+        ));
+        if let Some(error) = engines.take_last_error() {
+            return self.batch_aborted_reply(&error, operation_count);
+        }
+        match output {
+            RepositoryLedgerSignalOutput::Meta(reply) => {
+                FrameReply::committed(NonEmpty::single(SubReply::Ok(reply)))
+            }
+            RepositoryLedgerSignalOutput::Ordinary(_) => {
+                self.batch_aborted_reply(&Error::NexusReplyTierMismatch, operation_count)
             }
         }
+    }
+
+    fn apply_sema_write(&self, input: LedgerSemaWriteInput) -> Result<LedgerSemaWriteOutput> {
+        match input {
+            LedgerSemaWriteInput::RecordHookNotification(notification) => self
+                .record_hook_notification(notification)
+                .map(LedgerSemaWriteOutput::EventRecorded),
+            LedgerSemaWriteInput::RecordPushObservation(observation) => self
+                .record_push_observation(observation)
+                .map(LedgerSemaWriteOutput::EventRecorded),
+            LedgerSemaWriteInput::RegisterRepository(registration) => {
+                let repository_name = registration.repository_name.clone();
+                self.register_repository(registration)?;
+                Ok(LedgerSemaWriteOutput::Registered(Registered {
+                    repository_name,
+                }))
+            }
+            LedgerSemaWriteInput::RetireRepository(request) => self
+                .retire_repository(request)
+                .map(LedgerSemaWriteOutput::Retired),
+            LedgerSemaWriteInput::SetSpoolDirectoryPolicy(policy) => self
+                .set_spool_directory_policy(policy)
+                .map(LedgerSemaWriteOutput::SpoolDirectoryPolicySet),
+            LedgerSemaWriteInput::SetMirrorPolicy(policy) => self
+                .set_mirror_policy(policy)
+                .map(LedgerSemaWriteOutput::MirrorPolicySet),
+        }
+    }
+
+    fn observe_sema_read(&self, input: LedgerSemaReadInput) -> Result<LedgerSemaReadOutput> {
+        match input {
+            LedgerSemaReadInput::ReadQuery(query) => self
+                .execute_query(query)
+                .map(LedgerSemaReadOutput::QueryResult),
+        }
+    }
+
+    fn batch_aborted_reply<ReplyPayload>(
+        &self,
+        error: &Error,
+        operation_count: usize,
+    ) -> FrameReply<ReplyPayload> {
+        let mut per_operation = NonEmpty::single(SubReply::Invalidated);
+        for _ in 1..operation_count {
+            per_operation.push(SubReply::Invalidated);
+        }
+        FrameReply::batch_aborted(
+            error.batch_failure_reason(),
+            error.retry_classification(),
+            error.commit_status(),
+            per_operation,
+        )
     }
 
     fn execute_query(&self, query: Query) -> Result<QueryResult> {
@@ -729,158 +939,66 @@ impl Store {
             }
         }
     }
-
-    fn execute_meta_command(&self, command: MetaCommand) -> Result<MetaEffect> {
-        match command {
-            MetaCommand::RegisterRepository(registration) => {
-                let repository_name = registration.repository_name.clone();
-                self.register_repository(registration)?;
-                Ok(MetaEffect::Registered(Registered { repository_name }))
-            }
-            MetaCommand::RetireRepository(request) => {
-                self.retire_repository(request).map(MetaEffect::Retired)
-            }
-            MetaCommand::SetSpoolDirectoryPolicy(policy) => self
-                .set_spool_directory_policy(policy)
-                .map(MetaEffect::SpoolDirectoryPolicySet),
-            MetaCommand::SetMirrorPolicy(policy) => self
-                .set_mirror_policy(policy)
-                .map(MetaEffect::MirrorPolicySet),
-        }
-    }
 }
 
-impl Lowering for LedgerLowering {
-    type Operation = LedgerOperation;
-    type Reply = LedgerReply;
-    type Command = LedgerCommand;
-    type ComponentEffect = LedgerEffect;
+impl RunnerEngines for RepositoryLedgerNexusEngines<'_> {
+    type Reply = RepositoryLedgerSignalOutput;
+    type SemaWrite = LedgerSemaWriteInput;
+    type SemaRead = LedgerSemaReadInput;
+    type Effect = std::convert::Infallible;
+    type Work = RepositoryLedgerNexusWork;
 
-    fn lower(
-        &self,
-        operation: &Self::Operation,
-    ) -> std::result::Result<OperationPlan<Self::Command>, Self::Reply> {
-        Ok(OperationPlan::single(LedgerCommand::from_operation(
-            operation.clone(),
-        )))
-    }
-
-    fn reply_from_effects(
-        &self,
-        _operation: &Self::Operation,
-        effects: &OperationEffects<Self::Command, Self::ComponentEffect>,
-    ) -> Self::Reply {
-        effects
-            .component_effects()
-            .last()
-            .expect("repository-ledger ledger operation effects are non-empty")
-            .clone()
-            .into_reply()
-    }
-}
-
-impl Lowering for MetaLowering {
-    type Operation = MetaOperation;
-    type Reply = MetaReply;
-    type Command = MetaCommand;
-    type ComponentEffect = MetaEffect;
-
-    fn lower(
-        &self,
-        operation: &Self::Operation,
-    ) -> std::result::Result<OperationPlan<Self::Command>, Self::Reply> {
-        Ok(OperationPlan::single(MetaCommand::from_operation(
-            operation.clone(),
-        )))
-    }
-
-    fn reply_from_effects(
-        &self,
-        _operation: &Self::Operation,
-        effects: &OperationEffects<Self::Command, Self::ComponentEffect>,
-    ) -> Self::Reply {
-        effects
-            .component_effects()
-            .last()
-            .expect("repository-ledger meta operation effects are non-empty")
-            .clone()
-            .into_reply()
-    }
-}
-
-impl<'store> LedgerCommandExecutor<'store> {
-    fn execute_atomic_batch_synchronously(
-        &self,
-        plan: BatchPlan<LedgerCommand>,
-    ) -> Result<BatchEffects<LedgerCommand, LedgerEffect>> {
-        let operation_count = plan.operations().len();
-        if operation_count != 1 {
-            return Err(Error::UnsupportedAtomicBatch { operation_count });
-        }
-        let operation_plan = plan.into_operations().into_head();
-        let command = single_command_from_operation_plan(operation_plan)?;
-        let effect = self.store.execute_ledger_command(command.clone())?;
-        Ok(BatchEffects::single(OperationEffects::new(
-            NonEmpty::single(CommandEffect::new(command, effect)),
-        )))
-    }
-}
-
-impl<'store> MetaCommandExecutor<'store> {
-    fn execute_atomic_batch_synchronously(
-        &self,
-        plan: BatchPlan<MetaCommand>,
-    ) -> Result<BatchEffects<MetaCommand, MetaEffect>> {
-        let operation_count = plan.operations().len();
-        if operation_count != 1 {
-            return Err(Error::UnsupportedAtomicBatch { operation_count });
-        }
-        let operation_plan = plan.into_operations().into_head();
-        let command = single_command_from_operation_plan(operation_plan)?;
-        let effect = self.store.execute_meta_command(command.clone())?;
-        Ok(BatchEffects::single(OperationEffects::new(
-            NonEmpty::single(CommandEffect::new(command, effect)),
-        )))
-    }
-}
-
-impl CommandExecutor for LedgerCommandExecutor<'_> {
-    type Command = LedgerCommand;
-    type ComponentEffect = LedgerEffect;
-    type Error = Error;
-
-    fn execute_atomic_batch(
+    fn decide_next_step(
         &mut self,
-        plan: BatchPlan<Self::Command>,
-    ) -> impl future::Future<Output = Result<BatchEffects<Self::Command, Self::ComponentEffect>>>
-    + Send
-    + '_ {
-        future::ready(self.execute_atomic_batch_synchronously(plan))
+        work: Self::Work,
+    ) -> NextStep<Self::Reply, Self::SemaWrite, Self::SemaRead, Self::Effect, Self::Work> {
+        let action = match work {
+            RepositoryLedgerNexusWork::SignalArrived(input) => self.action_for_signal_input(input),
+            RepositoryLedgerNexusWork::SemaWriteCompleted(output) => {
+                self.action_for_sema_write_output(output)
+            }
+            RepositoryLedgerNexusWork::SemaReadCompleted(output) => {
+                self.action_for_sema_read_output(output)
+            }
+        };
+        TriadNexusAction::into_next_step(action)
     }
-}
 
-impl CommandExecutor for MetaCommandExecutor<'_> {
-    type Command = MetaCommand;
-    type ComponentEffect = MetaEffect;
-    type Error = Error;
-
-    fn execute_atomic_batch(
+    fn apply_sema_write(
         &mut self,
-        plan: BatchPlan<Self::Command>,
-    ) -> impl future::Future<Output = Result<BatchEffects<Self::Command, Self::ComponentEffect>>>
-    + Send
-    + '_ {
-        future::ready(self.execute_atomic_batch_synchronously(plan))
+        write: Self::SemaWrite,
+    ) -> impl future::Future<Output = Self::Work> + Send + '_ {
+        let output = match self.store.apply_sema_write(write) {
+            Ok(output) => output,
+            Err(error) => {
+                self.last_error = Some(error);
+                LedgerSemaWriteOutput::WriteRejected
+            }
+        };
+        future::ready(RepositoryLedgerNexusWork::SemaWriteCompleted(output))
     }
-}
 
-fn single_command_from_operation_plan<Command>(plan: OperationPlan<Command>) -> Result<Command> {
-    let commands = plan.into_commands();
-    let command_count = commands.len();
-    if command_count != 1 {
-        return Err(Error::UnsupportedAtomicOperationPlan { command_count });
+    fn observe_sema_read(
+        &mut self,
+        read: Self::SemaRead,
+    ) -> impl future::Future<Output = Self::Work> + Send + '_ {
+        let output = match self.store.observe_sema_read(read) {
+            Ok(output) => output,
+            Err(error) => {
+                self.last_error = Some(error);
+                LedgerSemaReadOutput::ReadMiss
+            }
+        };
+        future::ready(RepositoryLedgerNexusWork::SemaReadCompleted(output))
     }
-    Ok(commands.into_head())
+
+    async fn run_effect(&mut self, effect: Self::Effect) -> Self::Work {
+        match effect {}
+    }
+
+    fn budget_exhausted_reply(&self, _exhausted: ContinuationExhausted) -> Self::Reply {
+        self.failure_signal_output()
+    }
 }
 
 impl signal_frame::BatchErrorClassification for Error {

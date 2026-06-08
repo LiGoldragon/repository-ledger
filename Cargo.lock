@@ -480,10 +480,8 @@ dependencies = [
  "nota-next",
  "rkyv",
  "sema-engine",
- "signal-executor",
  "signal-frame",
  "signal-repository-ledger",
- "signal-sema",
  "tempfile",
  "thiserror",
  "tokio",
@@ -608,17 +606,6 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
-]
-
-[[package]]
-name = "signal-executor"
-version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-executor.git?branch=main#c34b9b93619b67082a1638b6b457c56c0f82be24"
-dependencies = [
- "rkyv",
- "signal-frame",
- "signal-sema",
- "thiserror",
 ]
 
 [[package]]

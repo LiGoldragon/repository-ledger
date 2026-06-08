@@ -55,6 +55,13 @@ stays in `primary/INTENT.md`.
   and `Observe` operations carrying domain-noun payloads; the daemon
   lowers them internally to sema-engine work — the six Sema
   classification words never appear on the public wire.
+- **Execution is Nexus-shaped, storage is SEMA-shaped.**
+  Ordinary and meta Signal requests enter an internal typed
+  `triad-runtime::Runner` path: Signal input becomes Nexus work, Nexus
+  chooses SEMA read/write, SEMA applies or observes `sema-engine`, and
+  Nexus replies to Signal. The old `signal-executor` lowering /
+  command-executor path is retired. This is the execution-plane
+  migration, not the separate contract schema-next migration.
 
 ## Anti-patterns
 
