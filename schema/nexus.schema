@@ -1,0 +1,27 @@
+[SignalArrived SemaWriteCompleted SemaReadCompleted]
+[ReplyToSignal CommandSemaWrite CommandSemaRead]
+{
+  RepositoryName String
+  EventSequence Integer
+
+  SignalArrived SignalInput
+  SemaWriteCompleted SemaWriteOutput
+  SemaReadCompleted SemaReadOutput
+
+  ReplyToSignal SignalOutput
+  CommandSemaWrite SemaWriteInput
+  CommandSemaRead SemaReadInput
+
+  SignalInput [(Ordinary OrdinaryOperation) (Meta MetaOperation)]
+  SignalOutput [(OrdinaryReply OrdinaryReply) (MetaReply MetaReply)]
+
+  OrdinaryOperation [(Receive RepositoryName) (Observe RepositoryName) (Query RepositoryName)]
+  MetaOperation [(Register RepositoryName) (Retire RepositoryName) (SetSpoolDirectory RepositoryName) (SetMirror RepositoryName)]
+  OrdinaryReply [(EventRecorded EventSequence) (QueryResult RepositoryName)]
+  MetaReply [(Registered RepositoryName) (Retired RepositoryName)]
+
+  SemaWriteInput [(RecordHookNotification RepositoryName) (RecordPushObservation RepositoryName) (RegisterRepository RepositoryName) (RetireRepository RepositoryName) (SetSpoolDirectoryPolicy RepositoryName) (SetMirrorPolicy RepositoryName)]
+  SemaReadInput [(ReadQuery RepositoryName)]
+  SemaWriteOutput [(EventRecorded EventSequence) (Registered RepositoryName) (Retired RepositoryName) (WriteRejected RepositoryName)]
+  SemaReadOutput [(QueryResult RepositoryName) (ReadMiss RepositoryName)]
+}

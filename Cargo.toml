@@ -6,6 +6,7 @@ rust-version = "1.88"
 license      = "MIT OR Apache-2.0"
 description  = "Repository change ledger daemon and CLI."
 publish      = false
+build        = "build.rs"
 
 [lib]
 name = "repository_ledger"
@@ -20,7 +21,6 @@ name = "repository-ledger"
 path = "src/bin/repository-ledger.rs"
 
 [dependencies]
-futures-executor               = "0.3"
 kameo                          = { version = "0.20.0", default-features = false, features = ["macros", "tracing"] }
 meta-signal-repository-ledger = { git = "https://github.com/LiGoldragon/meta-signal-repository-ledger", branch = "main" }
 nota-next                     = { git = "https://github.com/LiGoldragon/nota-next.git", branch = "main" }
@@ -31,6 +31,9 @@ signal-frame                   = { git = "https://github.com/LiGoldragon/signal-
 thiserror                      = "2"
 tokio                          = { version = "1.47", features = ["io-util", "net", "rt-multi-thread", "time"] }
 triad-runtime                  = { git = "https://github.com/LiGoldragon/triad-runtime.git", branch = "main" }
+
+[build-dependencies]
+schema-rust-next = { git = "https://github.com/LiGoldragon/schema-rust-next.git", branch = "main" }
 
 [dev-dependencies]
 tempfile = "3"

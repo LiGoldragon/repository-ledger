@@ -7,11 +7,22 @@ use std::future;
 use std::path::{Path, PathBuf};
 
 pub mod client;
+pub mod configuration;
 pub mod daemon;
 pub mod daemon_command;
 pub mod spool;
 
+pub mod schema {
+    #[rustfmt::skip]
+    pub mod daemon;
+}
+
+pub use configuration::{Configuration, ConfigurationError};
+pub use daemon::{
+    RepositoryLedgerDaemonError, RepositoryLedgerEngine, RepositoryLedgerProcessDaemon,
+};
 pub use daemon_command::{RepositoryLedgerDaemonCommand, RepositoryLedgerDaemonConfigurationFile};
+pub use schema::daemon::{ComponentDaemon, DaemonCommand, DaemonEntry, DaemonError, ListenerTier};
 
 use meta_signal_repository_ledger::{
     MirrorPolicy, MirrorPolicySet, Operation as MetaOperation, Registered, Reply as MetaReply,
@@ -813,7 +824,10 @@ impl Store {
         true
     }
 
-    pub fn handle_ordinary_request(&self, request: LedgerChannelRequest) -> LedgerChannelReply {
+    pub async fn handle_ordinary_request(
+        &self,
+        request: LedgerChannelRequest,
+    ) -> LedgerChannelReply {
         let operation_count = request.payloads().len();
         if operation_count != 1 {
             return self.batch_aborted_reply(
@@ -823,12 +837,14 @@ impl Store {
         }
         let operation = request.payloads.into_head();
         let mut engines = RepositoryLedgerNexusEngines::new(self);
-        let output = futures_executor::block_on(Runner::default().drive(
-            &mut engines,
-            RepositoryLedgerNexusWork::SignalArrived(RepositoryLedgerSignalInput::Ordinary(
-                operation,
-            )),
-        ));
+        let output = Runner::default()
+            .drive(
+                &mut engines,
+                RepositoryLedgerNexusWork::SignalArrived(RepositoryLedgerSignalInput::Ordinary(
+                    operation,
+                )),
+            )
+            .await;
         if let Some(error) = engines.take_last_error() {
             return self.batch_aborted_reply(&error, operation_count);
         }
@@ -842,7 +858,7 @@ impl Store {
         }
     }
 
-    pub fn handle_meta_request(
+    pub async fn handle_meta_request(
         &self,
         request: meta_signal_repository_ledger::ChannelRequest,
     ) -> meta_signal_repository_ledger::ChannelReply {
@@ -855,10 +871,14 @@ impl Store {
         }
         let operation = request.payloads.into_head();
         let mut engines = RepositoryLedgerNexusEngines::new(self);
-        let output = futures_executor::block_on(Runner::default().drive(
-            &mut engines,
-            RepositoryLedgerNexusWork::SignalArrived(RepositoryLedgerSignalInput::Meta(operation)),
-        ));
+        let output = Runner::default()
+            .drive(
+                &mut engines,
+                RepositoryLedgerNexusWork::SignalArrived(RepositoryLedgerSignalInput::Meta(
+                    operation,
+                )),
+            )
+            .await;
         if let Some(error) = engines.take_last_error() {
             return self.batch_aborted_reply(&error, operation_count);
         }

@@ -1,13 +1,5 @@
-fn main() {
-    match run() {
-        Ok(()) => {}
-        Err(error) => {
-            eprintln!("(DaemonRejected \"{error}\")");
-            std::process::exit(2);
-        }
-    }
-}
+use repository_ledger::{DaemonEntry, RepositoryLedgerProcessDaemon};
 
-fn run() -> repository_ledger::Result<()> {
-    repository_ledger::RepositoryLedgerDaemonCommand::from_environment().run()
+fn main() -> std::process::ExitCode {
+    <RepositoryLedgerProcessDaemon as DaemonEntry>::run_to_exit_code()
 }

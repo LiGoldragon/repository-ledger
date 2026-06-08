@@ -1,53 +1,99 @@
-use std::fmt::{Display, Formatter};
+//! Repository-ledger's daemon hooks — the only daemon code the component
+//! hand-writes (record 1488 escape hatches).
+//!
+//! The uniform daemon skeleton (argv parsing, async task-backed multi-listener
+//! binding, the decode -> serve -> encode spine, and the `ExitReport` entry) is
+//! emitted into `src/schema/daemon.rs` by schema-rust-next's daemon emitter.
+//! Repository-ledger runs the **component-decoded** working tier: its public
+//! ordinary and meta sockets still speak the relation-specific
+//! `signal_channel!` `ExchangeFrame` wire (not a schema-emitted root), so the
+//! component owns the per-tier frame decode/encode and drives the existing
+//! kameo store actors — the emitted shell owns only listener mechanics.
+//!
+//! `RepositoryLedgerEngine` is the [`ComponentDaemon::Engine`]. It opens the
+//! durable [`Store`] behind a `RepositoryLedgerStoreActor` (whose mailbox
+//! serialises every read and write) and a `SpoolIngestActor` driven by a
+//! periodic ticker. The engine is shared `&` across connections, so it holds
+//! the runtime in a [`OnceCell`] and starts the actors on first use; each
+//! request is an `ask` against the store actor; the Nexus runner is awaited
+//! natively in the actor handler, so the synchronous executor drive the old
+//! spine used is gone.
+
 use std::path::PathBuf;
-use std::time::Duration;
 
 use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::error::Infallible;
 use kameo::message::{Context, Message};
+use std::time::Duration;
+use thiserror::Error;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::OnceCell;
+
 use signal_frame::{
     ExchangeFrameBody, HandshakeRejectionReason, HandshakeReply, ProtocolVersion,
     SIGNAL_FRAME_PROTOCOL_VERSION,
 };
-use signal_repository_ledger::DaemonConfiguration;
 use triad_runtime::{
-    AcceptedConnection, AsyncListenerSocket, AsyncMultiConnectionRuntime, AsyncMultiListenerDaemon,
-    FrameBody, LengthPrefixedCodec, MaximumFrameLength, RequestConcurrencyLimit, RequestErrorLog,
-    SocketMode,
+    AcceptedConnection, FrameBody as LengthPrefixedFrameBody, FrameError, LengthPrefixedCodec,
+    MaximumFrameLength,
 };
 
+use crate::schema::daemon::ComponentDaemon;
 use crate::spool::{SpoolDirectory, SpoolIngestSummary};
-use crate::{Error, Result, Store};
+use crate::{Configuration, ConfigurationError, Error, Result, Store};
 
 const MAXIMUM_REQUEST_FRAME_BYTES: usize = 8 * 1024 * 1024;
-const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(10);
 const SPOOL_INGEST_INTERVAL: Duration = Duration::from_secs(2);
-const REQUEST_CONCURRENCY_LIMIT: usize = 16;
 
-pub struct Daemon {
-    configuration: DaemonConfiguration,
+/// The type-level selector for repository-ledger's emitted daemon. It carries
+/// no runtime data — it is the marker the emitted
+/// `DaemonCommand<RepositoryLedgerProcessDaemon>` and the generated runtime
+/// dispatch on, selecting the component's `Configuration` / `Engine` / `Error`
+/// types through the `ComponentDaemon` associated types.
+#[derive(Debug)]
+pub struct RepositoryLedgerProcessDaemon;
+
+/// Repository-ledger's daemon error: the engine-facing variants the emitted
+/// spine needs (`From<FrameError>`) plus the component's domain error.
+#[derive(Debug, Error)]
+pub enum RepositoryLedgerDaemonError {
+    #[error("daemon IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("daemon frame error: {0}")]
+    Frame(#[from] FrameError),
+
+    #[error("daemon signal frame error: {0}")]
+    SignalFrame(#[from] signal_frame::FrameError),
+
+    #[error("repository-ledger engine error: {0}")]
+    Engine(#[from] Error),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ListenerTier {
-    Ordinary,
-    Meta,
+/// The component-decoded engine: the durable store opened behind a serialising
+/// store actor, plus the spool directory the periodic ingester drains. The
+/// engine is shared `&` across connections; the store actor and spool ingester
+/// start lazily on first use through the [`OnceCell`].
+pub struct RepositoryLedgerEngine {
+    store_path: PathBuf,
+    spool_directory: PathBuf,
+    runtime: OnceCell<ActorRef<RepositoryLedgerStoreActor>>,
 }
 
-#[derive(Clone)]
-struct RepositoryLedgerRuntime {
-    store: ActorRef<RepositoryLedgerStoreActor>,
-}
-
+/// The kameo actor owning the durable [`Store`]. Its mailbox serialises every
+/// ordinary and meta request, so the store needs no interior lock.
 pub struct RepositoryLedgerStoreActor {
     store: Store,
 }
 
+/// The kameo actor that drains the spool directory into the store on demand.
 struct SpoolIngestActor {
     store: ActorRef<RepositoryLedgerStoreActor>,
     spool_directory: PathBuf,
 }
 
+/// The periodic driver that asks the spool ingester to drain on a fixed
+/// interval.
 struct SpoolIngestTicker {
     spool: ActorRef<SpoolIngestActor>,
     interval: Duration,
@@ -62,6 +108,10 @@ struct HandleMetaRequest {
 }
 
 struct IngestSpool;
+
+struct IngestSpoolInDirectory {
+    spool_directory: PathBuf,
+}
 
 #[derive(kameo::Reply)]
 struct OrdinaryRequestHandled {
@@ -78,102 +128,53 @@ struct SpoolIngested {
     result: Result<SpoolIngestSummary>,
 }
 
-impl Daemon {
-    pub fn new(configuration: DaemonConfiguration) -> Self {
-        Self { configuration }
-    }
-
-    pub fn run(self) -> Result<()> {
-        tokio::runtime::Runtime::new()
-            .map_err(|error| Error::DaemonRuntime {
-                detail: error.to_string(),
-            })?
-            .block_on(self.run_async_task_backed())
-    }
-
-    pub fn ingest_spool(&self) -> Result<SpoolIngestSummary> {
-        let store = Store::open(self.configuration.store_path.as_str())?;
-        SpoolDirectory::new(self.configuration.spool_directory.as_str()).ingest_into(&store)
-    }
-
-    async fn run_async_task_backed(self) -> Result<()> {
-        let store =
-            RepositoryLedgerStoreActor::start(Store::open(self.configuration.store_path.as_str())?)
-                .await;
-        let spool = SpoolIngestActor::start(
-            store.clone(),
-            PathBuf::from(self.configuration.spool_directory.as_str()),
-        )
-        .await;
-        SpoolIngestTicker::new(spool.clone(), SPOOL_INGEST_INTERVAL).spawn();
-        SpoolIngestActor::ingest(&spool).await?;
-
-        let runtime = RepositoryLedgerRuntime::new(store);
-        let listener_sockets = [
-            AsyncListenerSocket::new(
-                ListenerTier::Ordinary,
-                self.configuration.ordinary_socket_path.as_str(),
-            )
-            .with_socket_mode(SocketMode::new(
-                self.configuration.ordinary_socket_mode.into_u32(),
-            )),
-            AsyncListenerSocket::new(
-                ListenerTier::Meta,
-                self.configuration.meta_socket_path.as_str(),
-            )
-            .with_socket_mode(SocketMode::new(
-                self.configuration.meta_socket_mode.into_u32(),
-            )),
-        ];
-        AsyncMultiListenerDaemon::new(
-            listener_sockets,
-            runtime,
-            RequestErrorLog::new("repository-ledger-daemon"),
-        )
-        .with_concurrency_limit(RequestConcurrencyLimit::new(REQUEST_CONCURRENCY_LIMIT))
-        .run()
-        .await
-        .map_err(|error| Error::DaemonRuntime {
-            detail: error.to_string(),
+impl RepositoryLedgerEngine {
+    pub fn from_configuration(configuration: &Configuration) -> Result<Self> {
+        Ok(Self {
+            store_path: configuration.store_path().to_path_buf(),
+            spool_directory: configuration.spool_directory().to_path_buf(),
+            runtime: OnceCell::new(),
         })
     }
-}
 
-impl Display for ListenerTier {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Ordinary => formatter.write_str("ordinary"),
-            Self::Meta => formatter.write_str("meta"),
-        }
+    /// Lazily open the store, start the store actor, and spawn the spool
+    /// ingester plus its periodic ticker; subsequent connections reuse the
+    /// started store actor.
+    async fn store(&self) -> Result<&ActorRef<RepositoryLedgerStoreActor>> {
+        self.runtime
+            .get_or_try_init(|| async {
+                let store = RepositoryLedgerStoreActor::start(Store::open(&self.store_path)?).await;
+                let spool =
+                    SpoolIngestActor::start(store.clone(), self.spool_directory.clone()).await;
+                SpoolIngestActor::ingest(&spool).await?;
+                SpoolIngestTicker::new(spool, SPOOL_INGEST_INTERVAL).spawn();
+                Ok(store)
+            })
+            .await
     }
-}
 
-impl RepositoryLedgerRuntime {
-    fn new(store: ActorRef<RepositoryLedgerStoreActor>) -> Self {
-        Self { store }
-    }
-
-    async fn handle_ordinary_connection(&self, mut connection: AcceptedConnection) -> Result<()> {
+    async fn handle_working_connection(&self, mut connection: AcceptedConnection) -> Result<()> {
         loop {
             let frame = self.read_ordinary_frame(&mut connection).await?;
             match frame.into_body() {
                 ExchangeFrameBody::HandshakeRequest(request) => {
                     let reply = signal_repository_ledger::Frame::new(
-                        signal_repository_ledger::FrameBody::HandshakeReply(handshake_reply_for(
-                            request.version(),
-                        )),
+                        signal_repository_ledger::FrameBody::HandshakeReply(
+                            Self::handshake_reply_for(request.version()),
+                        ),
                     );
                     self.write_ordinary_frame(&mut connection, &reply).await?;
                 }
                 ExchangeFrameBody::Request { exchange, request } => {
                     let reply = self
-                        .store
-                        .ask(HandleOrdinaryRequest::new(request))
+                        .store()
+                        .await?
+                        .ask(HandleOrdinaryRequest { request })
                         .await
                         .map_err(|error| Error::ActorCall {
                             detail: error.to_string(),
                         })?
-                        .into_reply();
+                        .reply;
                     let frame = signal_repository_ledger::Frame::new(
                         signal_repository_ledger::FrameBody::Reply { exchange, reply },
                     );
@@ -192,20 +193,21 @@ impl RepositoryLedgerRuntime {
                 ExchangeFrameBody::HandshakeRequest(request) => {
                     let reply = meta_signal_repository_ledger::Frame::new(
                         meta_signal_repository_ledger::FrameBody::HandshakeReply(
-                            handshake_reply_for(request.version()),
+                            Self::handshake_reply_for(request.version()),
                         ),
                     );
                     self.write_meta_frame(&mut connection, &reply).await?;
                 }
                 ExchangeFrameBody::Request { exchange, request } => {
                     let reply = self
-                        .store
-                        .ask(HandleMetaRequest::new(request))
+                        .store()
+                        .await?
+                        .ask(HandleMetaRequest { request })
                         .await
                         .map_err(|error| Error::ActorCall {
                             detail: error.to_string(),
                         })?
-                        .into_reply();
+                        .reply;
                     let frame = meta_signal_repository_ledger::Frame::new(
                         meta_signal_repository_ledger::FrameBody::Reply { exchange, reply },
                     );
@@ -221,15 +223,9 @@ impl RepositoryLedgerRuntime {
         &self,
         connection: &mut AcceptedConnection,
     ) -> Result<signal_repository_ledger::Frame> {
-        let codec = Self::request_codec();
-        let body = tokio::time::timeout(
-            REQUEST_READ_TIMEOUT,
-            codec.read_body_async(connection.stream_mut()),
-        )
-        .await
-        .map_err(|_| Error::DaemonRuntime {
-            detail: String::from("ordinary request frame read timed out"),
-        })??;
+        let body = Self::request_codec()
+            .read_body_async(connection.stream_mut())
+            .await?;
         Ok(signal_repository_ledger::Frame::decode(body.bytes())?)
     }
 
@@ -239,8 +235,16 @@ impl RepositoryLedgerRuntime {
         frame: &signal_repository_ledger::Frame,
     ) -> Result<()> {
         Self::request_codec()
-            .write_body_async(connection.stream_mut(), &FrameBody::new(frame.encode()?))
+            .write_body_async(
+                connection.stream_mut(),
+                &LengthPrefixedFrameBody::new(frame.encode()?),
+            )
             .await?;
+        connection
+            .stream_mut()
+            .flush()
+            .await
+            .map_err(FrameError::from)?;
         Ok(())
     }
 
@@ -248,15 +252,9 @@ impl RepositoryLedgerRuntime {
         &self,
         connection: &mut AcceptedConnection,
     ) -> Result<meta_signal_repository_ledger::Frame> {
-        let codec = Self::request_codec();
-        let body = tokio::time::timeout(
-            REQUEST_READ_TIMEOUT,
-            codec.read_body_async(connection.stream_mut()),
-        )
-        .await
-        .map_err(|_| Error::DaemonRuntime {
-            detail: String::from("meta request frame read timed out"),
-        })??;
+        let body = Self::request_codec()
+            .read_body_async(connection.stream_mut())
+            .await?;
         Ok(meta_signal_repository_ledger::Frame::decode(body.bytes())?)
     }
 
@@ -266,29 +264,68 @@ impl RepositoryLedgerRuntime {
         frame: &meta_signal_repository_ledger::Frame,
     ) -> Result<()> {
         Self::request_codec()
-            .write_body_async(connection.stream_mut(), &FrameBody::new(frame.encode()?))
+            .write_body_async(
+                connection.stream_mut(),
+                &LengthPrefixedFrameBody::new(frame.encode()?),
+            )
             .await?;
+        connection
+            .stream_mut()
+            .flush()
+            .await
+            .map_err(FrameError::from)?;
         Ok(())
     }
 
     fn request_codec() -> LengthPrefixedCodec {
         LengthPrefixedCodec::new(MaximumFrameLength::new(MAXIMUM_REQUEST_FRAME_BYTES))
     }
+
+    /// Negotiate the signal-frame protocol version against a connecting peer:
+    /// accept when the local version subsumes the peer's, otherwise reject with
+    /// the incompatibility.
+    fn handshake_reply_for(peer: ProtocolVersion) -> HandshakeReply {
+        let local = SIGNAL_FRAME_PROTOCOL_VERSION;
+        if local.accepts(peer) {
+            HandshakeReply::Accepted(local)
+        } else {
+            HandshakeReply::Rejected(HandshakeRejectionReason::IncompatibleVersion { local, peer })
+        }
+    }
 }
 
-impl AsyncMultiConnectionRuntime for RepositoryLedgerRuntime {
-    type Listener = ListenerTier;
-    type Error = Error;
+impl ComponentDaemon for RepositoryLedgerProcessDaemon {
+    type Configuration = Configuration;
+    type ConfigurationError = ConfigurationError;
+    type Engine = RepositoryLedgerEngine;
+    type Error = RepositoryLedgerDaemonError;
 
-    async fn handle_connection(
-        &self,
-        listener: Self::Listener,
+    const PROCESS_NAME: &'static str = "repository-ledger-daemon";
+
+    fn load_configuration(
+        path: &std::path::Path,
+    ) -> std::result::Result<Self::Configuration, Self::ConfigurationError> {
+        Configuration::from_binary_path(path)
+    }
+
+    fn build_runtime(
+        configuration: &Self::Configuration,
+    ) -> std::result::Result<Self::Engine, Self::Error> {
+        Ok(RepositoryLedgerEngine::from_configuration(configuration)?)
+    }
+
+    async fn handle_working_connection(
+        engine: &Self::Engine,
         connection: AcceptedConnection,
-    ) -> Result<()> {
-        match listener {
-            ListenerTier::Ordinary => self.handle_ordinary_connection(connection).await,
-            ListenerTier::Meta => self.handle_meta_connection(connection).await,
-        }
+    ) -> std::result::Result<(), Self::Error> {
+        Ok(engine.handle_working_connection(connection).await?)
+    }
+
+    async fn handle_meta_connection(
+        engine: &Self::Engine,
+        connection: AcceptedConnection,
+    ) -> std::result::Result<(), Self::Error> {
+        Ok(engine.handle_meta_connection(connection).await?)
     }
 }
 
@@ -320,7 +357,9 @@ impl Message<HandleOrdinaryRequest> for RepositoryLedgerStoreActor {
         message: HandleOrdinaryRequest,
         _context: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        OrdinaryRequestHandled::new(self.store.handle_ordinary_request(message.request))
+        OrdinaryRequestHandled {
+            reply: self.store.handle_ordinary_request(message.request).await,
+        }
     }
 }
 
@@ -332,7 +371,23 @@ impl Message<HandleMetaRequest> for RepositoryLedgerStoreActor {
         message: HandleMetaRequest,
         _context: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        MetaRequestHandled::new(self.store.handle_meta_request(message.request))
+        MetaRequestHandled {
+            reply: self.store.handle_meta_request(message.request).await,
+        }
+    }
+}
+
+impl Message<IngestSpoolInDirectory> for RepositoryLedgerStoreActor {
+    type Reply = SpoolIngested;
+
+    async fn handle(
+        &mut self,
+        message: IngestSpoolInDirectory,
+        _context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        SpoolIngested {
+            result: SpoolDirectory::new(message.spool_directory).ingest_into(&self.store),
+        }
     }
 }
 
@@ -356,7 +411,7 @@ impl SpoolIngestActor {
             .map_err(|error| Error::ActorCall {
                 detail: error.to_string(),
             })?
-            .into_result()
+            .result
     }
 }
 
@@ -380,35 +435,20 @@ impl Message<IngestSpool> for SpoolIngestActor {
         _message: IngestSpool,
         _context: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.store
-            .ask(IngestSpoolInDirectory::new(self.spool_directory.clone()))
-            .await
-            .map_err(|error| Error::ActorCall {
-                detail: error.to_string(),
+        match self
+            .store
+            .ask(IngestSpoolInDirectory {
+                spool_directory: self.spool_directory.clone(),
             })
-            .into()
-    }
-}
-
-struct IngestSpoolInDirectory {
-    spool_directory: PathBuf,
-}
-
-impl IngestSpoolInDirectory {
-    fn new(spool_directory: PathBuf) -> Self {
-        Self { spool_directory }
-    }
-}
-
-impl Message<IngestSpoolInDirectory> for RepositoryLedgerStoreActor {
-    type Reply = SpoolIngested;
-
-    async fn handle(
-        &mut self,
-        message: IngestSpoolInDirectory,
-        _context: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        SpoolIngested::new(SpoolDirectory::new(message.spool_directory).ingest_into(&self.store))
+            .await
+        {
+            Ok(ingested) => ingested,
+            Err(error) => SpoolIngested {
+                result: Err(Error::ActorCall {
+                    detail: error.to_string(),
+                }),
+            },
+        }
     }
 }
 
@@ -432,65 +472,5 @@ impl SpoolIngestTicker {
                 Err(error) => eprintln!("(SpoolIngestError [{error}])"),
             }
         }
-    }
-}
-
-impl HandleOrdinaryRequest {
-    fn new(request: signal_repository_ledger::Request) -> Self {
-        Self { request }
-    }
-}
-
-impl HandleMetaRequest {
-    fn new(request: meta_signal_repository_ledger::ChannelRequest) -> Self {
-        Self { request }
-    }
-}
-
-impl OrdinaryRequestHandled {
-    fn new(reply: signal_repository_ledger::ReplyEnvelope) -> Self {
-        Self { reply }
-    }
-
-    fn into_reply(self) -> signal_repository_ledger::ReplyEnvelope {
-        self.reply
-    }
-}
-
-impl MetaRequestHandled {
-    fn new(reply: meta_signal_repository_ledger::ChannelReply) -> Self {
-        Self { reply }
-    }
-
-    fn into_reply(self) -> meta_signal_repository_ledger::ChannelReply {
-        self.reply
-    }
-}
-
-impl SpoolIngested {
-    fn new(result: Result<SpoolIngestSummary>) -> Self {
-        Self { result }
-    }
-
-    fn into_result(self) -> Result<SpoolIngestSummary> {
-        self.result
-    }
-}
-
-impl From<Result<SpoolIngested>> for SpoolIngested {
-    fn from(result: Result<SpoolIngested>) -> Self {
-        match result {
-            Ok(reply) => reply,
-            Err(error) => Self::new(Err(error)),
-        }
-    }
-}
-
-fn handshake_reply_for(peer: ProtocolVersion) -> HandshakeReply {
-    let local = SIGNAL_FRAME_PROTOCOL_VERSION;
-    if local.accepts(peer) {
-        HandshakeReply::Accepted(local)
-    } else {
-        HandshakeReply::Rejected(HandshakeRejectionReason::IncompatibleVersion { local, peer })
     }
 }
