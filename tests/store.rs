@@ -6,14 +6,14 @@ use std::time::{Duration, Instant};
 
 use meta_signal_repository_ledger::Operation as MetaOperation;
 use nota_next::NotaEncode;
-use repository_ledger::client::{CliRequest, CommandLineDispatch};
+use repository_ledger::client::Client;
 use repository_ledger::spool::SpoolDirectory;
 use repository_ledger::{
     RepositoryLedgerDaemonCommand, RepositoryLedgerDaemonConfigurationFile, Store,
 };
 use signal_frame::{
-    AcceptedOutcome, CommandLineSocket, ExchangeFrameBody, ExchangeIdentifier, ExchangeLane,
-    LaneSequence, Reply as FrameReply, RequestBuilder, RequestPayload, SessionEpoch, SubReply,
+    AcceptedOutcome, ExchangeFrameBody, ExchangeIdentifier, ExchangeLane, LaneSequence,
+    Reply as FrameReply, RequestBuilder, RequestPayload, SessionEpoch, SubReply,
 };
 use signal_repository_ledger::{
     Catalog, ChangedFiles, Class, CommitMessage, CommitMessages, CommitObservation,
@@ -84,32 +84,33 @@ fn encode_to_text(value: &impl NotaEncode) -> String {
 }
 
 #[test]
-fn command_line_dispatch_routes_working_and_meta_heads() {
-    let dispatch = CommandLineDispatch::new();
+fn ordinary_command_line_decodes_only_ordinary_contract_operations() {
+    let operation = LedgerOperation::Receive(notification(
+        "repository-ledger",
+        "1111111111111111111111111111111111111111",
+    ));
+    let text = encode_to_text(&operation);
 
     assert_eq!(
-        dispatch.route_head("Receive").expect("working head"),
-        CommandLineSocket::Working
+        Client::working_operation_from_nota(&text).expect("ordinary operation"),
+        operation
     );
-    assert_eq!(
-        dispatch.route_head("Register").expect("meta head"),
-        CommandLineSocket::Meta
-    );
+    assert!(Client::meta_operation_from_nota(&text).is_err());
 }
 
 #[test]
-fn command_line_request_decodes_meta_contract_by_head() {
-    let request = MetaOperation::Register(Registration {
+fn meta_command_line_decodes_only_meta_contract_operations() {
+    let operation = MetaOperation::Register(Registration {
         repository_name: Name::new("repository-ledger"),
         repository_class: Class::RuntimeComponent,
-    })
-    .into_request();
-    let text = encode_to_text(&request);
+    });
+    let text = encode_to_text(&operation);
 
-    match CliRequest::from_nota(&text).expect("meta request") {
-        CliRequest::Meta(decoded) => assert_eq!(decoded, request),
-        other => panic!("expected meta request, got {other:?}"),
-    }
+    assert_eq!(
+        Client::meta_operation_from_nota(&text).expect("meta operation"),
+        operation
+    );
+    assert!(Client::working_operation_from_nota(&text).is_err());
 }
 
 #[test]
@@ -254,12 +255,12 @@ fn spool_files_are_ingested_and_moved_to_processed() {
     std::fs::write(
         &file,
         r#"(ReceiveHookNotification
-  (Name [repository-ledger])
-  (GitoliteUser [gitolite-admin])
-  (ReceivedAt [20260519T120000Z])
+  (Name repository-ledger)
+  (GitoliteUser gitolite-admin)
+  (ReceivedAt 20260519T120000Z)
   (DaemonSocketPresent False)
   (RefUpdates
-    (RefUpdate [0000000000000000000000000000000000000000] [1111111111111111111111111111111111111111] [refs/heads/main])
+    (RefUpdate 0000000000000000000000000000000000000000 1111111111111111111111111111111111111111 refs/heads/main)
   )
 )"#,
     )

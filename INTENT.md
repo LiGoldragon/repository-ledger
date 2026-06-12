@@ -7,7 +7,8 @@ embellished. Maintenance: `primary/skills/repo-intent.md`.*
 `repository-ledger` is the triad runtime component that records pushed
 repository changes from the local Gitolite server into a sema-engine
 database. It is the `repository-ledger` CLI plus the long-lived
-`repository-ledger-daemon`. Paired with the contract repos
+`repository-ledger-daemon`, with `meta-repository-ledger` as the
+matching meta-signal CLI. Paired with the contract repos
 `signal-repository-ledger` (ordinary receive-hook assertions and read
 queries) and `meta-signal-repository-ledger` (meta-signal registration,
 spool, and mirror policy).
@@ -30,10 +31,11 @@ stays in `primary/INTENT.md`.
 
 ## Constraints
 
-- **The CLI talks only to its own daemon.** The `repository-ledger` CLI
-  is the daemon's thin Signal client; the Gitolite receive hook invokes
-  it first, with a `ReceiveHookNotification` spool file as a fallback
-  only when CLI submission fails.
+- **The CLIs talk only to their own daemon.** `repository-ledger` is the
+  daemon's thin ordinary Signal client; `meta-repository-ledger` is the
+  thin meta Signal client. The Gitolite receive hook invokes the
+  ordinary CLI first, with a `ReceiveHookNotification` spool file as a
+  fallback only when CLI submission fails.
 - **Every stored record is a typed Rust record.** No line-oriented log
   is the source of truth.
 - **Two authority tiers, two listener tasks.** Ordinary contract

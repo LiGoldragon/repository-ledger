@@ -4,14 +4,14 @@
 //! Daemons never parse NOTA (hard override): the wire form is
 //! [`signal_repository_ledger::DaemonConfiguration`] encoded to rkyv. This
 //! wrapper owns the decoded paths the emitted shell binds its listeners from
-//! through the [`triad_runtime::DaemonConfiguration`] trait, plus the store and
+//! through the [`triad_runtime::BindingSurface`] trait, plus the store and
 //! spool paths the engine opens.
 
 use std::path::{Path, PathBuf};
 
 use signal_repository_ledger::DaemonConfiguration as WireConfiguration;
 use thiserror::Error;
-use triad_runtime::{DaemonConfiguration, SocketMode as RuntimeSocketMode};
+use triad_runtime::{BindingSurface, SocketMode as RuntimeSocketMode};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Configuration {
@@ -101,7 +101,7 @@ impl Configuration {
     }
 }
 
-impl DaemonConfiguration for Configuration {
+impl BindingSurface for Configuration {
     fn socket_path(&self) -> &Path {
         &self.ordinary_socket_path
     }

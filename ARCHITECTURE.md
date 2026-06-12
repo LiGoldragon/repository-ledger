@@ -8,13 +8,15 @@ CLI with a `PushObservation` NOTA request. The CLI is the ordinary
 Signal client: it connects to `repository-ledger-daemon`, sends the typed
 request, and prints the typed reply. The hook still writes a
 `ReceiveHookNotification` spool file as a fallback if the CLI
-submission fails.
+submission fails. `meta-repository-ledger` is the matching meta Signal
+client for registration, spool policy, and mirror policy operations.
 
 ## Component Shape
 
 ```mermaid
 flowchart LR
     cli["repository-ledger<br/>thin CLI"]
+    metacli["meta-repository-ledger<br/>thin meta CLI"]
     daemon["repository-ledger-daemon<br/>long-lived triad daemon"]
     ordinary["signal-repository-ledger<br/>ordinary socket"]
     meta["meta-signal-repository-ledger<br/>meta socket"]
@@ -23,6 +25,7 @@ flowchart LR
     spool["fallback spool files"]
 
     cli --> daemon
+    metacli --> daemon
     gitolite --> daemon
     gitolite --> spool
     spool --> daemon
@@ -49,7 +52,7 @@ flowchart LR
 
 ## Constraints
 
-- The CLI talks only to `repository-ledger-daemon`.
+- The ordinary and meta CLIs talk only to `repository-ledger-daemon`.
 - The daemon has separate listener tasks for ordinary and meta contracts.
 - Store access is actor-owned: socket handlers and spool ingestion ask
   `RepositoryLedgerStoreActor` instead of sharing `Store` behind
@@ -87,6 +90,8 @@ This repository now proves the first live triad boundary:
 - `repository-ledger-daemon` binds ordinary and meta sockets through
   `triad_runtime::AsyncMultiListenerDaemon`, one listener task per authority
   tier.
+- `repository-ledger` parses only ordinary-contract operations, and
+  `meta-repository-ledger` parses only meta-contract operations.
 - The old blocking `UnixListener` daemon, repo-local `frame_io` module, and
   static `serve_*_stream` entrypoints are retired.
 - Hook notifications can be stored as typed repository events.

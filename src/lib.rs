@@ -72,9 +72,6 @@ pub enum Error {
     #[error("runtime frame error: {0}")]
     RuntimeFrame(#[from] triad_runtime::FrameError),
 
-    #[error("command line route error: {0}")]
-    CommandLineRoute(#[from] signal_frame::CommandLineRouteError),
-
     #[error("NOTA decode error: {0}")]
     Nota(#[from] NotaDecodeError),
 
@@ -703,7 +700,7 @@ impl Store {
             }
             for file in &commit.commit.changed_files {
                 if let Some(search) = &query.path_contains
-                    && !contains_case_insensitive(file.path.as_str(), search.as_str())
+                    && !Self::contains_case_insensitive(file.path.as_str(), search.as_str())
                 {
                     continue;
                 }
@@ -746,7 +743,7 @@ impl Store {
             })
             .filter(|commit| {
                 if let Some(search) = &query.message_contains {
-                    contains_case_insensitive(commit.commit.message.as_str(), search.as_str())
+                    Self::contains_case_insensitive(commit.commit.message.as_str(), search.as_str())
                 } else {
                     true
                 }
@@ -822,6 +819,10 @@ impl Store {
             return false;
         }
         true
+    }
+
+    fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
+        haystack.to_lowercase().contains(&needle.to_lowercase())
     }
 
     pub async fn handle_ordinary_request(
@@ -1053,14 +1054,4 @@ impl signal_frame::BatchErrorClassification for Error {
             _ => CommitStatus::NotCommitted,
         }
     }
-}
-
-impl Error {
-    pub fn command_line_route(error: signal_frame::CommandLineRouteError) -> Self {
-        Self::CommandLineRoute(error)
-    }
-}
-
-fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
-    haystack.to_lowercase().contains(&needle.to_lowercase())
 }
