@@ -607,7 +607,7 @@ dependencies = [
 [[package]]
 name = "schema-rust-next"
 version = "0.5.3"
-source = "git+https://github.com/LiGoldragon/schema-rust-next.git?branch=main#7c15bc3fa3d07f4710acca16f14eef1aa68b02dd"
+source = "git+https://github.com/LiGoldragon/schema-rust-next.git?branch=main#00763d676d63395d45b5f8a81dbf9a2287574ca9"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -630,7 +630,7 @@ dependencies = [
 [[package]]
 name = "sema-engine"
 version = "0.4.0"
-source = "git+https://github.com/LiGoldragon/sema-engine.git?branch=main#dbe29427d9a2c6c194909385485ad42b008048b8"
+source = "git+https://github.com/LiGoldragon/sema-engine.git?branch=main#909eaa0b9f3c902662fb6081c050ae3337e578c9"
 dependencies = [
  "blake3",
  "rkyv",
