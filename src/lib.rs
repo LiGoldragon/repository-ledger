@@ -31,8 +31,9 @@ use meta_signal_repository_ledger::{
 use nota_next::NotaDecodeError;
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use sema_engine::{
-    Assertion, Engine, EngineOpen, EngineRecord, Mutation, QueryPlan, RecordKey, Retraction,
-    SchemaVersion, TableDescriptor, TableName, TableReference,
+    Assertion, Engine, EngineOpen, EngineRecord, FamilyName, Mutation, QueryPlan, RecordKey,
+    Retraction, SchemaHash, SchemaVersion, TableDescriptor, TableName, TableReference,
+    VersionedStoreName, VersioningPolicy,
 };
 use signal_frame::{
     BatchErrorClassification, BatchFailureReason, CommitStatus, NonEmpty, Reply as FrameReply,
@@ -57,6 +58,11 @@ const REPOSITORY_COMMITS: TableName = TableName::new("repository_commits");
 const REPOSITORY_REGISTRATIONS: TableName = TableName::new("repository_registrations");
 const SPOOL_DIRECTORY_POLICY: TableName = TableName::new("spool_directory_policy");
 const MIRROR_POLICIES: TableName = TableName::new("mirror_policies");
+const REPOSITORY_EVENTS_FAMILY: &str = "repository-event";
+const REPOSITORY_COMMITS_FAMILY: &str = "repository-commit";
+const REPOSITORY_REGISTRATIONS_FAMILY: &str = "repository-registration";
+const SPOOL_DIRECTORY_POLICY_FAMILY: &str = "spool-directory-policy";
+const MIRROR_POLICIES_FAMILY: &str = "mirror-policy";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -485,17 +491,27 @@ pub struct Store {
 
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let mut engine = Engine::open(EngineOpen::new(
-            path.as_ref().to_path_buf(),
-            SchemaVersion::new(SCHEMA_VERSION),
+        let mut engine = Engine::open(Self::engine_open(path.as_ref()))?;
+        let events = engine.register_table(Self::family_descriptor(
+            REPOSITORY_EVENTS,
+            REPOSITORY_EVENTS_FAMILY,
         ))?;
-        let events = engine.register_table(TableDescriptor::new(REPOSITORY_EVENTS))?;
-        let commits = engine.register_table(TableDescriptor::new(REPOSITORY_COMMITS))?;
-        let registrations =
-            engine.register_table(TableDescriptor::new(REPOSITORY_REGISTRATIONS))?;
-        let spool_directory_policy =
-            engine.register_table(TableDescriptor::new(SPOOL_DIRECTORY_POLICY))?;
-        let mirror_policies = engine.register_table(TableDescriptor::new(MIRROR_POLICIES))?;
+        let commits = engine.register_table(Self::family_descriptor(
+            REPOSITORY_COMMITS,
+            REPOSITORY_COMMITS_FAMILY,
+        ))?;
+        let registrations = engine.register_table(Self::family_descriptor(
+            REPOSITORY_REGISTRATIONS,
+            REPOSITORY_REGISTRATIONS_FAMILY,
+        ))?;
+        let spool_directory_policy = engine.register_table(Self::family_descriptor(
+            SPOOL_DIRECTORY_POLICY,
+            SPOOL_DIRECTORY_POLICY_FAMILY,
+        ))?;
+        let mirror_policies = engine.register_table(Self::family_descriptor(
+            MIRROR_POLICIES,
+            MIRROR_POLICIES_FAMILY,
+        ))?;
         Ok(Self {
             engine,
             events,
@@ -504,6 +520,26 @@ impl Store {
             spool_directory_policy,
             mirror_policies,
         })
+    }
+
+    fn engine_open(path: &Path) -> EngineOpen {
+        EngineOpen::new(path.to_path_buf(), SchemaVersion::new(SCHEMA_VERSION))
+            .with_versioning(Self::versioning_policy())
+    }
+
+    fn versioning_policy() -> VersioningPolicy {
+        VersioningPolicy::new(VersionedStoreName::new("repository-ledger"))
+    }
+
+    fn family_descriptor<RecordValue>(
+        table: TableName,
+        family: &str,
+    ) -> TableDescriptor<RecordValue> {
+        TableDescriptor::new(
+            table,
+            FamilyName::new(family),
+            SchemaHash::for_label(format!("repository-ledger-{family}-v{SCHEMA_VERSION}")),
+        )
     }
 
     pub fn record_hook_notification(
