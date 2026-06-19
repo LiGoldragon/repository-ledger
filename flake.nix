@@ -23,7 +23,7 @@
       system:
       let
         pkgs = import nixpkgs { inherit system; };
-        toolchain = fenix.packages.${system}.stable.withComponents [
+        toolchain = fenix.packages.${system}.complete.withComponents [
           "cargo"
           "rustc"
           "rustfmt"
