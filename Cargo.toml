@@ -25,7 +25,7 @@ name = "meta-repository-ledger"
 path = "src/bin/meta-repository-ledger.rs"
 
 [dependencies]
-kameo                          = { version = "0.20.0", default-features = false, features = ["macros", "tracing"] }
+kameo                          = { git = "https://github.com/LiGoldragon/kameo.git", branch = "main", default-features = false, features = ["macros", "tracing"] }
 meta-signal-repository-ledger = { git = "https://github.com/LiGoldragon/meta-signal-repository-ledger", branch = "main", features = ["nota-text"] }
 nota-next                     = { git = "https://github.com/LiGoldragon/nota-next.git", branch = "main" }
 rkyv                           = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
@@ -46,3 +46,6 @@ tempfile = "3"
 unsafe_code = "forbid"
 unused      = { level = "warn", priority = -1 }
 dead_code   = { level = "warn", priority = -1 }
+
+[patch.crates-io]
+kameo = { git = "https://github.com/LiGoldragon/kameo.git", branch = "main" }
