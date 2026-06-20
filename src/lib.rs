@@ -21,7 +21,10 @@ pub use configuration::{Configuration, ConfigurationError};
 pub use daemon::{
     RepositoryLedgerDaemonError, RepositoryLedgerEngine, RepositoryLedgerProcessDaemon,
 };
-pub use daemon_command::{RepositoryLedgerDaemonCommand, RepositoryLedgerDaemonConfigurationFile};
+pub use daemon_command::{
+    ConfigurationWriteRequest, RepositoryLedgerDaemonCommand,
+    RepositoryLedgerDaemonConfigurationFile,
+};
 pub use schema::daemon::{ComponentDaemon, DaemonCommand, DaemonEntry, DaemonError, ListenerTier};
 
 use meta_signal_repository_ledger::{
