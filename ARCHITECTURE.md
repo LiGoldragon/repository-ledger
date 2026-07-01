@@ -11,6 +11,12 @@ request, and prints the typed reply. The hook still writes a
 submission fails. `meta-repository-ledger` is the matching meta Signal
 client for registration, spool policy, and mirror policy operations.
 
+## Direction
+
+`repository-ledger` is the triad runtime component that records pushed repository changes from the local Gitolite server into one `sema-engine` database as typed Rust records. Two explicit goals drive the scope: persisting repository events and commit observations after each push, and answering agent-facing discovery queries — recent repositories, changed files in a window, commit-message search — as first-class ordinary-contract `Query` operations.
+
+Execution is Nexus-shaped: Signal input enters a `triad-runtime::Runner`, Nexus chooses SEMA read or write, SEMA applies or observes `sema-engine`, and Nexus replies to Signal. The older `signal-executor` lowering path is retired. Time-window comparison over `Timestamp(String)` in canonical UTC-sortable form is transitional and collapses into native timestamp comparison when the workspace timestamp type lands.
+
 ## Component Shape
 
 ```mermaid
