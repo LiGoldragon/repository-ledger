@@ -4,7 +4,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
 use meta_signal_repository_ledger::{Operation as MetaOperation, Reply as MetaReply};
-use nota_next::{NotaEncode, NotaSource};
+use nota::{NotaEncode, NotaSource};
 use signal_frame::{
     ExchangeFrameBody, ExchangeIdentifier, ExchangeLane, HandshakeReply, HandshakeRequest,
     LaneSequence, Reply as FrameReply, RequestPayload, SessionEpoch, SubReply,

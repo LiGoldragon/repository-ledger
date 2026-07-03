@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use nota_next::{NotaDecode, NotaDecodeError, NotaSource};
+use nota::{NotaDecode, NotaDecodeError, NotaSource};
 use repository_ledger::ConfigurationWriteRequest;
 use thiserror::Error;
 use triad_runtime::{ArgumentError, ComponentArgument, ComponentCommand};

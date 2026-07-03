@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
-use nota_next::NotaDecode;
+use nota::NotaDecode;
 use signal_repository_ledger::{
     DaemonConfiguration as WireConfiguration, FilesystemPath, SocketMode,
 };

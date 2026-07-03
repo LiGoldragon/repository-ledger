@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use nota_next::{Block, Delimiter, NotaBlock, NotaDecode, NotaDecodeError, NotaSource};
+use nota::{Block, Delimiter, NotaBlock, NotaDecode, NotaDecodeError, NotaSource};
 use signal_repository_ledger::{
     GitoliteUser, Name, ObjectIdentifier, ReceiveHookNotification, RefName, RefUpdate, Timestamp,
 };

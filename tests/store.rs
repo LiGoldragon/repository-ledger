@@ -5,7 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use meta_signal_repository_ledger::Operation as MetaOperation;
-use nota_next::NotaEncode;
+use nota::NotaEncode;
 use repository_ledger::client::Client;
 use repository_ledger::spool::SpoolDirectory;
 use repository_ledger::{

@@ -31,7 +31,7 @@ use meta_signal_repository_ledger::{
     MirrorPolicy, MirrorPolicySet, Operation as MetaOperation, Registered, Reply as MetaReply,
     Retired, Retirement, SpoolDirectoryPolicy, SpoolDirectoryPolicySet,
 };
-use nota_next::NotaDecodeError;
+use nota::NotaDecodeError;
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use sema_engine::{
     Assertion, Engine, EngineOpen, EngineRecord, FamilyName, Mutation, QueryPlan, RecordKey,
