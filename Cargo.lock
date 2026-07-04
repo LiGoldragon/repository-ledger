@@ -318,7 +318,7 @@ checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
 [[package]]
 name = "meta-signal-repository-ledger"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/meta-signal-repository-ledger?branch=drop-next#12bc96b47609b705fffa96e6d30bf240b4e7db2f"
+source = "git+https://github.com/LiGoldragon/meta-signal-repository-ledger?branch=drop-next#d6e472dfcd6b08ae83f896d035bcb102672e0f39"
 dependencies = [
  "nota",
  "rkyv",
@@ -570,7 +570,7 @@ dependencies = [
 [[package]]
 name = "schema-rust"
 version = "0.5.3"
-source = "git+https://github.com/LiGoldragon/schema-rust.git?branch=drop-next#7f746c020bfbb64d76de968214255f343b2e94a4"
+source = "git+https://github.com/LiGoldragon/schema-rust.git?branch=drop-next#af814e757cd84fb0b3b8cce9c0623f69b6d99b5c"
 dependencies = [
  "nota",
  "prettyplease",
