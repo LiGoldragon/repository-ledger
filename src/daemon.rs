@@ -3,7 +3,7 @@
 //!
 //! The uniform daemon skeleton (argv parsing, async task-backed multi-listener
 //! binding, the decode -> serve -> encode spine, and the `ExitReport` entry) is
-//! emitted into `src/schema/daemon.rs` by schema-rust-next's daemon emitter.
+//! emitted into `src/schema/daemon.rs` by schema-rust's daemon emitter.
 //! Repository-ledger runs the **component-decoded** working tier: its public
 //! ordinary and meta sockets still speak the relation-specific
 //! `signal_channel!` `ExchangeFrame` wire (not a schema-emitted root), so the
