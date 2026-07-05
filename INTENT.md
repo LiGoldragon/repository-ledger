@@ -63,7 +63,7 @@ stays in `primary/INTENT.md`.
   chooses SEMA read/write, SEMA applies or observes `sema-engine`, and
   Nexus replies to Signal. The old `signal-executor` lowering /
   command-executor path is retired. This is the execution-plane
-  migration, not the separate contract schema-next migration.
+  migration, not the separate contract schema migration.
 
 ## Anti-patterns
 

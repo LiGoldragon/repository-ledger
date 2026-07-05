@@ -107,7 +107,7 @@ This repository now proves the first live triad boundary:
 The contract axis is not complete in this slice: `signal-repository-ledger`
 and `meta-signal-repository-ledger` still publish hand-written
 `signal_channel!` contracts. The daemon-side execution axis is migrated; the
-wire-contract schema-next migration is a separate follow-up.
+wire-contract schema migration is a separate follow-up.
 
 ## Actor Runtime Shape
 
