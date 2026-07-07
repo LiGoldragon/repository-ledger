@@ -1,7 +1,5 @@
 # repository-ledger — Agent Instructions
 
-Read `~/primary/AGENTS.md`, then this file.
-
 This repository is a triad runtime crate:
 
 - `repository-ledger-daemon` is the long-lived owner of repository ledger state.
