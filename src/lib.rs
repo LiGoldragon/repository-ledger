@@ -31,12 +31,13 @@ use meta_signal_repository_ledger::{
     MirrorPolicy, MirrorPolicySet, Operation as MetaOperation, Registered, Reply as MetaReply,
     Retired, Retirement, SpoolDirectoryPolicy, SpoolDirectoryPolicySet,
 };
-use nota_next::NotaDecodeError;
+use nota::NotaDecodeError;
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use sema_engine::{
     Assertion, Engine, EngineOpen, EngineRecord, FamilyName, Mutation, QueryPlan, RecordKey,
     Retraction, SchemaHash, SchemaVersion, TableDescriptor, TableName, TableReference,
-    VersionedStoreName, VersioningPolicy,
+    VersionedHistoryAcknowledgement, VersionedHistoryRetention, VersionedStoreName,
+    VersioningPolicy,
 };
 use signal_frame::{
     BatchErrorClassification, BatchFailureReason, CommitStatus, NonEmpty, Reply as FrameReply,
@@ -139,6 +140,25 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// The explicit durable-history budget an operator may apply to repository
+/// observations. It is deliberately not an implicit daemon default: discovery
+/// consumers choose the review window they require before old observations are
+/// compacted into the verified SEMA checkpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LedgerHistoryRetention {
+    maximum_events: u64,
+}
+
+impl LedgerHistoryRetention {
+    pub const fn new(maximum_events: u64) -> Self {
+        Self { maximum_events }
+    }
+
+    pub const fn maximum_events(&self) -> u64 {
+        self.maximum_events
+    }
+}
 
 #[derive(Archive, RkyvSerialize, RkyvDeserialize, Debug, Clone, PartialEq, Eq)]
 pub struct StoredEvent {
@@ -806,6 +826,58 @@ impl Store {
         Ok(CommitListing { commits })
     }
 
+    /// Bound durable hook and commit observations while preserving the current
+    /// registration/policy state and restart recovery. The caller must supply
+    /// its discovery budget explicitly; this component has no authority to
+    /// silently shorten an operator's repository audit window.
+    pub fn compact_history(&self, retention: LedgerHistoryRetention) -> Result<u64> {
+        let mut events = self
+            .engine
+            .match_records(QueryPlan::all(self.events))?
+            .records()
+            .to_vec();
+        events.sort_by_key(|event| event.sequence);
+        let retained_start = events
+            .len()
+            .saturating_sub(retention.maximum_events() as usize);
+        let retired_sequences: Vec<EventSequence> = events
+            .into_iter()
+            .take(retained_start)
+            .map(|event| event.sequence)
+            .collect();
+        if retired_sequences.is_empty() {
+            return Ok(0);
+        }
+        let retired: std::collections::BTreeSet<u64> = retired_sequences
+            .iter()
+            .map(|sequence| sequence.into_u64())
+            .collect();
+        let commits = self
+            .engine
+            .match_records(QueryPlan::all(self.commits))?
+            .records()
+            .to_vec();
+        for commit in commits {
+            if retired.contains(&commit.sequence.into_u64()) {
+                self.engine
+                    .retract(Retraction::new(self.commits, commit.record_key()))?;
+            }
+        }
+        for sequence in &retired_sequences {
+            self.engine.retract(Retraction::new(
+                self.events,
+                RecordKey::new(format!("{:020}", sequence.into_u64())),
+            ))?;
+        }
+        // Repository-ledger's current topology has no executing external
+        // mirror; its verified local checkpoint is the recovery consumer.
+        self.engine.compact_versioned_history(
+            VersionedHistoryRetention::new(0),
+            VersionedHistoryAcknowledgement::LocalCheckpoint,
+        )?;
+        Ok(retired_sequences.len() as u64)
+    }
+
     pub fn repository_catalog(&self) -> Result<CatalogListing> {
         let snapshot = self
             .engine
@@ -824,15 +896,12 @@ impl Store {
     }
 
     fn next_event_sequence(&self) -> Result<EventSequence> {
-        let snapshot = self.engine.match_records(QueryPlan::all(self.events))?;
-        let next = snapshot
-            .records()
-            .iter()
-            .map(|event| event.sequence.into_u64())
-            .max()
-            .unwrap_or(0)
-            + 1;
-        Ok(EventSequence::new(next))
+        // The engine's durable commit high-water mark survives history
+        // compaction, unlike the retained event rows. It therefore remains a
+        // collision-free event issuer after an empty retained window.
+        Ok(EventSequence::new(
+            self.engine.current_commit_sequence()?.value() + 1,
+        ))
     }
 
     fn commit_matches_common_filters(
