@@ -31,7 +31,7 @@ path = "src/bin/repository-ledger-write-configuration.rs"
 [dependencies]
 kameo                          = { git = "https://github.com/LiGoldragon/kameo.git", branch = "main", default-features = false, features = ["macros", "tracing"] }
 meta-signal-repository-ledger = { git = "https://github.com/LiGoldragon/meta-signal-repository-ledger", branch = "main", features = ["nota-text"] }
-nota                     = { git = "https://github.com/LiGoldragon/nota.git", branch = "main" }
+nota-next                = { package = "nota", git = "https://github.com/LiGoldragon/nota.git", branch = "main" }
 rkyv                           = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
 sema-engine                    = { git = "https://github.com/LiGoldragon/sema-engine.git", branch = "main" }
 signal-repository-ledger       = { git = "https://github.com/LiGoldragon/signal-repository-ledger", branch = "main", features = ["nota-text"] }
@@ -41,7 +41,7 @@ tokio                          = { version = "1.47", features = ["io-util", "net
 triad-runtime                  = { git = "https://github.com/LiGoldragon/triad-runtime.git", branch = "main" }
 
 [build-dependencies]
-schema-rust = { git = "https://github.com/LiGoldragon/schema-rust.git", rev = "0f306826f64622b375ad232f0a59d32904487b9d" }
+schema-rust-next = { package = "schema-rust", git = "https://github.com/LiGoldragon/schema-rust.git", rev = "0f306826f64622b375ad232f0a59d32904487b9d" }
 
 [dev-dependencies]
 tempfile = "3"

@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use nota_next::{Block, Delimiter, NotaBlock, NotaDecode, NotaDecodeError, NotaSource};
+use nota::{Block, Delimiter, NotaBlock, NotaDecode, NotaDecodeError, NotaSource};
 use signal_repository_ledger::{
     GitoliteUser, Name, ObjectIdentifier, ReceiveHookNotification, RefName, RefUpdate, Timestamp,
 };
@@ -41,9 +41,6 @@ impl SpoolDirectory {
         if !self.path.exists() {
             return Ok(SpoolIngestSummary::empty());
         }
-        let processed_directory = self.path.join("processed");
-        fs::create_dir_all(&processed_directory)?;
-
         let mut candidates = Vec::new();
         for entry in fs::read_dir(&self.path)? {
             let entry = entry?;
@@ -60,17 +57,17 @@ impl SpoolDirectory {
         for path in candidates {
             let notification = SpoolNotificationFile::from_path(&path)?.decode()?;
             store.record_hook_notification(notification)?;
-            Self::move_to_processed(&path, &processed_directory)?;
+            Self::remove_committed_file(&path)?;
             summary.record_file();
         }
         Ok(summary)
     }
 
-    fn move_to_processed(path: &Path, processed_directory: &Path) -> Result<()> {
-        let file_name = path
-            .file_name()
-            .expect("spool candidate path came from a directory entry");
-        fs::rename(path, processed_directory.join(file_name))?;
+    /// A fallback notification becomes redundant immediately after the store
+    /// commits it. Removing the terminal spool projection prevents the
+    /// processed directory from becoming an unbounded second event history.
+    fn remove_committed_file(path: &Path) -> Result<()> {
+        fs::remove_file(path)?;
         Ok(())
     }
 }

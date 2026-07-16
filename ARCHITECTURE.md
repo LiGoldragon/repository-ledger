@@ -11,12 +11,6 @@ request, and prints the typed reply. The hook still writes a
 submission fails. `meta-repository-ledger` is the matching meta Signal
 client for registration, spool policy, and mirror policy operations.
 
-## Direction
-
-`repository-ledger` is the triad runtime component that records pushed repository changes from the local Gitolite server into one `sema-engine` database as typed Rust records. Two explicit goals drive the scope: persisting repository events and commit observations after each push, and answering agent-facing discovery queries — recent repositories, changed files in a window, commit-message search — as first-class ordinary-contract `Query` operations.
-
-Execution is Nexus-shaped: Signal input enters a `triad-runtime::Runner`, Nexus chooses SEMA read or write, SEMA applies or observes `sema-engine`, and Nexus replies to Signal. The older `signal-executor` lowering path is retired. Time-window comparison over `Timestamp(String)` in canonical UTC-sortable form is transitional and collapses into native timestamp comparison when the workspace timestamp type lands.
-
 ## Component Shape
 
 ```mermaid
@@ -107,13 +101,21 @@ This repository now proves the first live triad boundary:
   operations over Signal frames.
 - The daemon can answer agent-facing discovery queries for recent repositories,
   changed files, and commit messages.
-- The spool reader parses the fallback CriomOS hook projection and moves files
-  to `processed/` after commit.
+- The spool reader parses the fallback CriomOS hook projection and removes its
+  terminal projection immediately after the durable commit; the typed ledger is
+  the sole retained history.
 
 The contract axis is not complete in this slice: `signal-repository-ledger`
 and `meta-signal-repository-ledger` still publish hand-written
 `signal_channel!` contracts. The daemon-side execution axis is migrated; the
-wire-contract schema-next migration is a separate follow-up.
+wire-contract schema migration is a separate follow-up.
+
+## History retention
+
+`LedgerHistoryRetention` is an explicit typed event-count budget. Applying it
+removes the oldest hook events and their derived commit observations, then
+compacts the locally acknowledged SEMA version-history prefix into a verified
+checkpoint. Repository registration and policy rows remain current state.
 
 ## Actor Runtime Shape
 

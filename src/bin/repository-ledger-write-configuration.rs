@@ -7,6 +7,8 @@
 
 use std::path::PathBuf;
 
+extern crate nota_next as nota;
+
 use nota_next::{NotaDecode, NotaDecodeError, NotaSource};
 use repository_ledger::ConfigurationWriteRequest;
 use thiserror::Error;
